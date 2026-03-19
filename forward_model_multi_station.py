@@ -51,7 +51,6 @@ def primed_to_unprimed_fallback(x_prime, y_prime, x0_prime, y0_prime, theta_deg)
     y = dx * np.sin(theta) + dy * np.cos(theta)
     return x, y
 
-
 def forward_model_multi_station(
     pmax, tpeak, d, time,
     x_prime, y_prime,
@@ -61,10 +60,8 @@ def forward_model_multi_station(
     alpha=None, station_names=None
 ):
     """
-    Multi-station forward model.
-    Returns a pandas DataFrame with Time, Pressure, and one column per component per station.
+    Multi-station forward model that outputs columns strain_1 ... strain_N.
     """
-    # Convert arrays
     x_prime = np.asarray(x_prime, dtype=float)
     y_prime = np.asarray(y_prime, dtype=float)
     z = np.asarray(z, dtype=float)
@@ -72,15 +69,14 @@ def forward_model_multi_station(
     Ns = x_prime.size
     Nt = len(time)
 
-    # Ensure station_names is cleaned
     if station_names is None:
-        station_names = [f"FS{js+1:02d}" for js in range(Ns)]
+        station_names = [f"S{js+1}" for js in range(Ns)]
     else:
         station_names = [str(s).strip() for s in station_names]
         if len(station_names) != Ns:
             raise ValueError("station_names length must match number of stations")
 
-    # Transform primed -> unprimed
+    # Primed -> unprimed
     if multi_station_coord_transform is not None and hasattr(multi_station_coord_transform, 'primed_to_unprimed'):
         x_arr, y_arr = multi_station_coord_transform.primed_to_unprimed(
             x_prime, y_prime, x0_prime, y0_prime, theta_deg
@@ -93,7 +89,7 @@ def forward_model_multi_station(
     # Pressure
     p_series = pressure_time_series(pmax, tpeak, d, time)
 
-    # Strain function globals
+    # Prepare strain function
     sf = multi_station_strain
     rotate = multi_station_rotation
     if sf is not None:
@@ -104,15 +100,9 @@ def forward_model_multi_station(
         except Exception:
             pass
 
-    # Prepare storage
-    eps_xx = np.zeros((Nt, Ns))
-    eps_yy = np.zeros((Nt, Ns))
-    eps_zz = np.zeros((Nt, Ns))
-    eps_xy = np.zeros((Nt, Ns))
-    eps_xz = np.zeros((Nt, Ns))
-    eps_yz = np.zeros((Nt, Ns))
+    # Storage: flattened for strain_1 ... strain_N
+    strain_data = np.zeros((Nt, Ns*6))  # 6 components per station: XX, YY, ZZ, XY, XZ, YZ
 
-    # Compute strains
     for it, p_val in enumerate(p_series):
         if sf is None or not (hasattr(sf, "linear_trans") and hasattr(sf, "charac_strain")):
             raise RuntimeError("strain_function must provide linear_trans and charac_strain")
@@ -120,6 +110,7 @@ def forward_model_multi_station(
         lt = sf.linear_trans(alpha, nu, p_val, E)
         ec = sf.charac_strain(lt, nu)
 
+        col_counter = 0
         for js, (xx, yy) in enumerate(zip(x_arr, y_arr)):
             S = sf.strain(
                 x=xx, y=yy, z=z[js],
@@ -131,7 +122,6 @@ def forward_model_multi_station(
             exx, eyy, ezz = S[0,0], S[1,1], S[2,2]
             exy, exz, eyz = S[0,1], S[0,2], S[1,2]
 
-            # Rotate
             if sf is not None and hasattr(sf, "rotate_strain_tensor"):
                 exx_p, eyy_p, exy_p, exz_p, eyz_p, ezz_p = sf.rotate_strain_tensor(
                     exx, eyy, exy, exz, eyz, ezz, theta_deg
@@ -143,76 +133,85 @@ def forward_model_multi_station(
             else:
                 exx_p, eyy_p, exy_p, exz_p, eyz_p, ezz_p = exx, eyy, exy, exz, eyz, ezz
 
-            # Store nanostrain
-            eps_xx[it, js] = exx_p * 1e9
-            eps_yy[it, js] = eyy_p * 1e9
-            eps_zz[it, js] = ezz_p * 1e9
-            eps_xy[it, js] = exy_p * 1e9
-            eps_xz[it, js] = exz_p * 1e9
-            eps_yz[it, js] = eyz_p * 1e9
+            # Save 6 components in order: XX, YY, ZZ, XY, XZ, YZ
+            for comp in [exx_p, eyy_p, ezz_p, exy_p, exz_p, eyz_p]:
+                strain_data[it, col_counter] = comp * 1e9
+                col_counter += 1
 
     # Build DataFrame
-    df = pd.DataFrame({"Time (days)": np.asarray(time), "Pressure (Pa)": p_series})
-
-    comp_names = {
-        "Epsilon_XX_nanostrain": eps_xx,
-        "Epsilon_YY_nanostrain": eps_yy,
-        "Epsilon_ZZ_nanostrain": eps_zz,
-        "Epsilon_XY_nanostrain": eps_xy,
-        "Epsilon_XZ_nanostrain": eps_xz,
-        "Epsilon_YZ_nanostrain": eps_yz,
-    }
-
-    # Add columns with cleaned station names
-    for comp_base, arr in comp_names.items():
-        for js, st_name in enumerate(station_names):
-            colname = f"{comp_base}_{st_name}"
-            df[colname] = arr[:, js]
+    df = pd.DataFrame({"time_s": np.asarray(time)})
+    for i in range(strain_data.shape[1]):
+        df[f"strain_{i+1}"] = strain_data[:, i]
 
     return df
 
-
-# Convenience wrapper
+# -------------------------------------------------------------------
+# Convenience wrapper for PyDREAM inversion
+# -------------------------------------------------------------------
 def strain_dataset(pmax, tpeak, d, time, x, y, z, a, b, c, nu, h, E, theta_deg, **kwargs):
+    """
+    Wrapper for forward_model_multi_station to return PyDREAM-ready dataset.
+    Outputs columns: strain_1 ... strain_N
+    """
     return forward_model_multi_station(
-        pmax, tpeak, d, time, x, y,
-        x0_prime=0, y0_prime=0,
-        z=z, a=a, b=b, c=c,
-        nu=nu, h=h, E=E, theta_deg=theta_deg,
+        pmax=pmax,
+        tpeak=tpeak,
+        d=d,
+        time=time,
+        x_prime=x,
+        y_prime=y,
+        x0_prime=kwargs.get("x0_prime", 0),
+        y0_prime=kwargs.get("y0_prime", 0),
+        z=z,
+        a=a,
+        b=b,
+        c=c,
+        nu=nu,
+        h=h,
+        E=E,
+        theta_deg=theta_deg,
         alpha=kwargs.get("alpha", None),
-        station_names=kwargs.get("station_names", None),
+        station_names=kwargs.get("station_names", None)
     )
 
 
+# -------------------------------------------------------------------
+# Save dataset function
+# -------------------------------------------------------------------
 def save_dataset_to_excel(dataset, out_path):
+    """
+    Save dataset to Excel or fallback CSV.
+    """
     try:
         dataset.to_excel(out_path, index=False, engine="openpyxl")
         return out_path
     except Exception:
         csv_path = os.path.splitext(out_path)[0] + ".csv"
         dataset.to_csv(csv_path, index=False)
-        print(f"Saved dataset as CSV to '{csv_path}' as fallback.")
+        print(f"[INFO] Saved dataset as CSV to '{csv_path}' as fallback.")
         return csv_path
 
 
+# -------------------------------------------------------------------
+# Optional main execution block for testing
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     if multi_stations_input is None or not hasattr(multi_stations_input, "read_input"):
         raise RuntimeError("`multi_stations_input.read_input()` not found")
 
     params = multi_stations_input.read_input()
 
-    # Clean station names for consistency
+    # Clean station names
     station_names = stations_df["station"].astype(str).str.strip().values
 
-    df_out = forward_model_multi_station(
+    # Generate strain dataset
+    df_out = strain_dataset(
         pmax=params["pmax"],
         tpeak=params["tpeak"],
         d=params["d"],
         time=params["time"],
-        x_prime=params["x_prime"],
-        y_prime=params["y_prime"],
-        x0_prime=params["x0_prime"],
-        y0_prime=params["y0_prime"],
+        x=params["x_prime"],
+        y=params["y_prime"],
         z=params["z"],
         a=params["a"],
         b=params["b"],
@@ -222,7 +221,7 @@ if __name__ == "__main__":
         E=params["E"],
         theta_deg=params["theta_deg"],
         alpha=params.get("alpha", None),
-        station_names=station_names,
+        station_names=station_names
     )
 
     out_file = os.path.join(os.path.dirname(__file__), "strain_dataset_output.xlsx")

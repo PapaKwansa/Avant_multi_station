@@ -1,9 +1,3 @@
-"""
-Run PyDREAM for multi-station strain + volume inversion.
-Geometry re-parameterized using a single scale parameter s.
-AVANT stations used consistently (NO FS fallback).
-"""
-
 import os
 import numpy as np
 import multiprocessing
@@ -15,53 +9,49 @@ from pydream.core import run_dream
 from pydream.parameters import SampledParam
 from pydream.convergence import Gelman_Rubin
 
-import multi_stations_input
 from forward_model_multi_station import forward_model_multi_station
-import bayesian_inversion_multi_station as bi
+import multi_stations_input as input_data
 
 # ============================================================
-# Environment
+# Setup
 # ============================================================
 
+params = input_data.read_input()
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
-
 np.random.seed(42)
 
 # ============================================================
-# Read input + AVANT stations (SINGLE SOURCE OF TRUTH)
+# Read AVANT stations & observed strain dataset
 # ============================================================
-
-params = multi_stations_input.read_input()
-time = np.asarray(params["time"])
-
-RESULTS_DIR = os.path.join(os.path.expanduser("~"), "Avant_results")
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 BASE_DIR = os.path.dirname(__file__)
 STATION_FILE = os.path.join(BASE_DIR, "AVANT_stations.csv")
+OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
 
 stations_df = pd.read_csv(STATION_FILE)
-
-# Required columns check
 required_cols = ["station", "x_prime", "y_prime", "depth"]
 missing = set(required_cols) - set(stations_df.columns)
 if missing:
     raise RuntimeError(f"Missing columns in AVANT_stations.csv: {missing}")
 
-# Clean station names to avoid hidden spaces
 station_names = stations_df["station"].astype(str).str.strip().values
 x_prime = stations_df["x_prime"].values
 y_prime = stations_df["y_prime"].values
 z = stations_df["depth"].values
-
 Ns = len(station_names)
 print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
 
+observed_df = pd.read_csv(OBSERVED_FILE)
+time = observed_df["time_s"].values
+COMPONENT_COLS = [col for col in observed_df.columns if col != "time_s"]
+observed_vector = observed_df[COMPONENT_COLS].values.flatten()
+sigma_noise = 0.05 * np.std(observed_vector)
+
 # ============================================================
-# Geometry shape ratios (FIXED)
+# Geometry ratios (fixed)
 # ============================================================
 
 a0 = 1.0
@@ -69,153 +59,65 @@ b0 = 25.0 / 175.0
 c0 = 125.0 / 175.0
 
 # ============================================================
-# Base strain components
-# ============================================================
-
-base_components = [
-    "Epsilon_XX_nanostrain",
-    "Epsilon_YY_nanostrain",
-    "Epsilon_ZZ_nanostrain",
-    "Epsilon_XY_nanostrain",
-    "Epsilon_XZ_nanostrain",
-    "Epsilon_YZ_nanostrain",
-]
-
-# ============================================================
-# Create synthetic strain dataset (AVANT-aware)
-# ============================================================
-
-df_clean = forward_model_multi_station(
-    pmax=params["pmax"],
-    tpeak=params["tpeak"],
-    d=params["d"],
-    time=time,
-    x_prime=x_prime,
-    y_prime=y_prime,
-    x0_prime=params["x0_prime"],
-    y0_prime=params["y0_prime"],
-    z=z,
-    a=params["a"],
-    b=params["b"],
-    c=params["c"],
-    nu=params["nu"],
-    h=params["h"],
-    E=params["E"],
-    theta_deg=params["theta_deg"],
-    alpha=params.get("alpha", None),
-    station_names=station_names,
-)
-
-print(df_clean.columns.tolist())
-
-# ============================================================
-# Component columns (AVANT, NOT FS)
-# ============================================================
-
-COMPONENT_COLS = [
-    f"{comp}_{station_names[s].strip()}"
-    for comp in base_components
-    for s in range(Ns)
-]
-
-# Safety check: must come AFTER df_clean is created
-missing_cols = [c for c in COMPONENT_COLS if c not in df_clean.columns]
-if missing_cols:
-    print("[DEBUG] df_clean columns:", df_clean.columns.tolist())
-    print("[DEBUG] COMPONENT_COLS expected:", COMPONENT_COLS)
-    raise RuntimeError(
-        "Missing columns in forward output:\n" + "\n".join(missing_cols)
-    )
-
-print("[INFO] Component columns verified (AVANT)")
-
-# ============================================================
-# Flatten synthetic strain data
-# ============================================================
-
-clean_vector = bi._flatten_df_to_vector(df_clean, cols=COMPONENT_COLS)
-sigma_noise = 0.05 * np.std(clean_vector)
-
-observed_vector = clean_vector + np.random.normal(
-    0.0, sigma_noise, size=clean_vector.size
-)
-
-observed_df = pd.DataFrame(
-    observed_vector.reshape(len(COMPONENT_COLS), len(time)).T,
-    columns=COMPONENT_COLS,
-)
-
-# ============================================================
-# Volume forward model
-# ============================================================
-
-def bulk_modulus(E, nu):
-    return E / (3.0 * (1.0 - 2.0 * nu))
-
-def volume_forward(a, b, c, E, nu, delta_P):
-    V0 = a * b * c
-    K = bulk_modulus(E, nu)
-    return V0 * (1.0 + delta_P / K)
-
-# ============================================================
-# Synthetic volume data
-# ============================================================
-
-delta_P = params["pmax"] * np.sin(np.pi * time / time.max())
-V_true = volume_forward(params["a"], params["b"], params["c"],
-                        params["E"], params["nu"], delta_P)
-
-sigma_volume = 0.05 * np.std(V_true)
-V_obs = V_true + np.random.normal(0.0, sigma_volume, size=V_true.size)
-observed_df["Volume"] = V_obs
-
-out_csv = os.path.join(RESULTS_DIR, "strain_volume_dataset.csv")
-observed_df.to_csv(out_csv, index=False)
-print(f"[INFO] Synthetic strain + volume dataset saved to {out_csv}")
-
-# ============================================================
-# Likelihood wrapper
+# Likelihood wrapper (robust, strain-only)
 # ============================================================
 
 def likelihood_wrapper(params_in):
+    """
+    params_in = [s, E_s, theta_deg_s, sigma_s]
+    """
     s, E_s, theta_deg_s, sigma_s = np.ravel(params_in)
     a_s = s * a0
     b_s = s * b0
     c_s = s * c0
 
-    return bi.likelihood(
-        params=[a_s, b_s, c_s, E_s, theta_deg_s, sigma_s],
-        observed_vector=observed_vector,
-        time=time,
-        x_prime=x_prime,
-        y_prime=y_prime,
-        x0_prime=params["x0_prime"],
-        y0_prime=params["y0_prime"],
-        z=z,
-        nu=params["nu"],
-        pmax=params["pmax"],
-        tpeak=params["tpeak"],
-        d=params["d"],
-        h=params["h"],
-        alpha=params.get("alpha", None),
-        component_cols=COMPONENT_COLS,
-        volume_obs=V_obs,
-        delta_P=delta_P,
-        sigma_volume=sigma_volume,
-        volume_weight=1.0,
-        station_names=station_names,   # <-- key addition
-    )
+    try:
+        # Run forward model
+        df_pred = forward_model_multi_station(
+            pmax=params["pmax"],
+            tpeak=params["tpeak"],
+            d=params["d"],
+            time=time,
+            x_prime=x_prime,
+            y_prime=y_prime,
+            x0_prime=params["x0_prime"],
+            y0_prime=params["y0_prime"],
+            z=z,
+            a=a_s, b=b_s, c=c_s,
+            nu=params["nu"],
+            h=params["h"],
+            E=E_s,
+            theta_deg=theta_deg_s,
+            alpha=params.get("alpha", None),
+            station_names=station_names,
+        )
+
+        # Make sure prediction has the same columns as observed
+        pred_vector = []
+        for col in COMPONENT_COLS:
+            if col not in df_pred.columns:
+                raise ValueError(f"[ERROR] Forward model missing column: {col}")
+            pred_vector.append(df_pred[col].values)
+        pred_vector = np.array(pred_vector).flatten()
+
+        # Gaussian likelihood
+        residual = observed_vector - pred_vector
+        log_likelihood = -0.5 * np.sum((residual / sigma_s) ** 2 + np.log(2 * np.pi * sigma_s ** 2))
+        return log_likelihood
+
+    except Exception as e:
+        print(f"[ERROR] Likelihood failed for params {params_in}: {e}")
+        return -np.inf
 
 # ============================================================
 # Priors
 # ============================================================
 
 param_priors = [
-    SampledParam(uniform, loc=100.0, scale=150.0),  # s
-    SampledParam(uniform, loc=0.8 * params["E"], scale=0.4 * params["E"]),
-    SampledParam(uniform, loc=params["theta_deg"] - 15.0, scale=30.0),
-    SampledParam(norm, loc=max(1e-8, sigma_noise),
-                 scale=max(1e-8, 0.5 * sigma_noise)),
+    SampledParam(uniform, loc=50.0, scale=150.0),  # s
+    SampledParam(uniform, loc=0.8e10, scale=0.4e10),  # E
+    SampledParam(uniform, loc=params["theta_deg_start"] - 15.0, scale=30.0),  # theta
+    SampledParam(norm, loc=max(1e-8, sigma_noise), scale=max(1e-8, 0.5 * sigma_noise)),  # sigma
 ]
 
 # ============================================================
@@ -226,13 +128,8 @@ MAX_ITER = 50000
 BATCH_SIZE = 20000
 NCHAINS = 4
 R_HAT_THRESH = 1.1
-MODEL_NAME = "pydream_multi_station_reparam_volume_AVANT"
-
+MODEL_NAME = "pydream_multi_station_strain_only"
 MP_CTX = multiprocessing.get_context("spawn")
-
-# ============================================================
-# Normalize chains
-# ============================================================
 
 def normalize_sampled_params(sampled_params):
     arr = np.asarray(sampled_params)
@@ -243,7 +140,7 @@ def normalize_sampled_params(sampled_params):
     raise RuntimeError(f"Unexpected chain shape {arr.shape}")
 
 # ============================================================
-# Main loop
+# Main PyDREAM loop
 # ============================================================
 
 def main():
@@ -253,10 +150,8 @@ def main():
     batch_no = 0
 
     while total_iters < MAX_ITER:
-
         batch_no += 1
         this_batch = min(BATCH_SIZE, MAX_ITER - total_iters)
-
         print(f"\n[INFO] Batch {batch_no}: {this_batch} iterations")
         t0 = _time.time()
 
@@ -282,7 +177,6 @@ def main():
                 chains_list[i] = np.vstack([chains_list[i], batch_chains[i]])
 
         total_iters += this_batch
-
         print(f"[INFO] Batch finished in {_time.time() - t0:.1f} s")
 
         try:
@@ -294,10 +188,14 @@ def main():
         except Exception as e:
             print("[WARN] R-hat failed:", e)
 
+    # Save posterior
     np.save("multi_station_sampled_params.npy", np.stack(chains_list))
     np.save("multi_station_logps.npy", np.concatenate(logps_list))
-
     print("[INFO] Posterior samples saved.")
+
+# ============================================================
+# Entry point
+# ============================================================
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
