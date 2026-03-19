@@ -7,7 +7,7 @@ from forward_model_multi_station import forward_model_multi_station
 
 # -------------------- USER INPUT --------------------
 # Observed dataset (forward model output you want to reproduce)
-df_obs = pd.read_csv("strain_dataset_output.csv")  # replace with your dataset
+df_obs = pd.read_csv("avant_cleaned_strain.csv")  # replace with your dataset
 time_vals = df_obs["time_s"].values
 strain_cols = [col for col in df_obs.columns if "strain_" in col]
 
