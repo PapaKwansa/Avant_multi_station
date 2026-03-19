@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import differential_evolution
-from forward_model import forward_model_multi_station
+from forward_model_multi_station import forward_model_multi_station
 
 # -------------------- USER INPUT --------------------
 # Observed dataset (forward model output you want to reproduce)
