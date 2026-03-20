@@ -23,7 +23,8 @@ z = stations_df['depth'].values
 pmax = 10e6
 tpeak = 8
 d = 2
-time_vals = np.linspace(0, 12, 20)
+obs_df = pd.read_csv("avant_cleaned_strain.csv")
+time_vals = obs_df["time_s"].values
 
 # ---------------------- GEOMETRY RATIOS ----------------------
 a0 = 1.0          # base scale
