@@ -1,0 +1,386 @@
+[
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      1,
+      -1,
+      1
+    ],
+    "sign_name": "+eXX,+eYY,-eXY,+eZZ",
+    "rmse": 74.33058307271826,
+    "scalar": 0.9948269095175132
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "sign_name": "+eXX,+eYY,+eXY,+eZZ",
+    "rmse": 74.34461099610637,
+    "scalar": 0.9945656516667214
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "sign_name": "+eXX,+eYY,+eXY,+eZZ",
+    "rmse": 76.49180350470434,
+    "scalar": 0.954603936057864
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      1,
+      -1,
+      1
+    ],
+    "sign_name": "+eXX,+eYY,-eXY,+eZZ",
+    "rmse": 76.7296204988261,
+    "scalar": 0.9500332416174032
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      -1,
+      1,
+      1
+    ],
+    "sign_name": "+eXX,-eYY,+eXY,+eZZ",
+    "rmse": 95.56591237871147,
+    "scalar": 0.5429443628112854
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      -1,
+      -1,
+      1
+    ],
+    "sign_name": "+eXX,-eYY,-eXY,+eZZ",
+    "rmse": 95.75636933001968,
+    "scalar": 0.5383736683708246
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      -1,
+      -1,
+      1
+    ],
+    "sign_name": "+eXX,-eYY,-eXY,+eZZ",
+    "rmse": 95.78545522629233,
+    "scalar": 0.5376243619918494
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      -1,
+      1,
+      1
+    ],
+    "sign_name": "+eXX,-eYY,+eXY,+eZZ",
+    "rmse": 95.79634146010046,
+    "scalar": 0.5373631041410575
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      1,
+      1,
+      1
+    ],
+    "sign_name": "-eXX,+eYY,+eXY,+eZZ",
+    "rmse": 102.63116306107467,
+    "scalar": 0.3672957895357149
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      1,
+      -1,
+      1
+    ],
+    "sign_name": "-eXX,+eYY,-eXY,+eZZ",
+    "rmse": 102.64597530205319,
+    "scalar": 0.3670927280471948
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      1,
+      1,
+      1
+    ],
+    "sign_name": "-eXX,+eYY,+eXY,+eZZ",
+    "rmse": 102.6561340103056,
+    "scalar": 0.36683147019640294
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      1,
+      -1,
+      1
+    ],
+    "sign_name": "-eXX,+eYY,-eXY,+eZZ",
+    "rmse": 102.80853218366883,
+    "scalar": 0.36272509509525414
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      1,
+      -1,
+      -1
+    ],
+    "sign_name": "+eXX,+eYY,-eXY,-eZZ",
+    "rmse": 112.8948491965476,
+    "scalar": 0.09037107732926099
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      1,
+      1,
+      -1
+    ],
+    "sign_name": "+eXX,+eYY,+eXY,-eZZ",
+    "rmse": 112.90408575132847,
+    "scalar": 0.09010981947846912
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      1,
+      1,
+      -1
+    ],
+    "sign_name": "+eXX,+eYY,+eXY,-eZZ",
+    "rmse": 114.32938116942316,
+    "scalar": 0.04893447815132457
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      1,
+      -1,
+      -1
+    ],
+    "sign_name": "+eXX,+eYY,-eXY,-eZZ",
+    "rmse": 114.48862850551939,
+    "scalar": 0.04436378371086375
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      -1,
+      1,
+      1
+    ],
+    "sign_name": "-eXX,-eYY,+eXY,+eZZ",
+    "rmse": 117.53724191354056,
+    "scalar": -0.04436378371086375
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      -1,
+      -1,
+      1
+    ],
+    "sign_name": "-eXX,-eYY,-eXY,+eZZ",
+    "rmse": 117.69214882537293,
+    "scalar": -0.04893447815132457
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      -1,
+      -1,
+      1
+    ],
+    "sign_name": "-eXX,-eYY,-eXY,+eZZ",
+    "rmse": 119.10505488302121,
+    "scalar": -0.09010981947846912
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      -1,
+      1,
+      1
+    ],
+    "sign_name": "-eXX,-eYY,+eXY,+eZZ",
+    "rmse": 119.11380987492426,
+    "scalar": -0.09037107732926099
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      -1,
+      1,
+      -1
+    ],
+    "sign_name": "+eXX,-eYY,+eXY,-eZZ",
+    "rmse": 127.87906397826234,
+    "scalar": -0.36272509509525414
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      1,
+      -1,
+      -1,
+      -1
+    ],
+    "sign_name": "+eXX,-eYY,-eXY,-eZZ",
+    "rmse": 128.02145782035169,
+    "scalar": -0.3672957895357149
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      -1,
+      -1,
+      -1
+    ],
+    "sign_name": "+eXX,-eYY,-eXY,-eZZ",
+    "rmse": 128.04321468976403,
+    "scalar": -0.36683147019640294
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      1,
+      -1,
+      1,
+      -1
+    ],
+    "sign_name": "+eXX,-eYY,+eXY,-eZZ",
+    "rmse": 128.05135857272705,
+    "scalar": -0.3670927280471948
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      1,
+      1,
+      -1
+    ],
+    "sign_name": "-eXX,+eYY,+eXY,-eZZ",
+    "rmse": 133.24176157064966,
+    "scalar": -0.5383736683708246
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      1,
+      -1,
+      -1
+    ],
+    "sign_name": "-eXX,+eYY,-eXY,-eZZ",
+    "rmse": 133.2531712226417,
+    "scalar": -0.5373631041410575
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      1,
+      1,
+      -1
+    ],
+    "sign_name": "-eXX,+eYY,+eXY,-eZZ",
+    "rmse": 133.26099671367754,
+    "scalar": -0.5376243619918494
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      1,
+      -1,
+      -1
+    ],
+    "sign_name": "-eXX,+eYY,-eXY,-eZZ",
+    "rmse": 133.37843035866567,
+    "scalar": -0.5429443628112854
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      -1,
+      1,
+      -1
+    ],
+    "sign_name": "-eXX,-eYY,+eXY,-eZZ",
+    "rmse": 145.03521859128944,
+    "scalar": -0.9500332416174032
+  },
+  {
+    "use_rotation": false,
+    "signs": [
+      -1,
+      -1,
+      -1,
+      -1
+    ],
+    "sign_name": "-eXX,-eYY,-eXY,-eZZ",
+    "rmse": 145.16078427149216,
+    "scalar": -0.954603936057864
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      -1,
+      -1,
+      -1
+    ],
+    "sign_name": "-eXX,-eYY,-eXY,-eZZ",
+    "rmse": 146.30866513596672,
+    "scalar": -0.9945656516667214
+  },
+  {
+    "use_rotation": true,
+    "signs": [
+      -1,
+      -1,
+      1,
+      -1
+    ],
+    "sign_name": "-eXX,-eYY,+eXY,-eZZ",
+    "rmse": 146.31579237423605,
+    "scalar": -0.9948269095175132
+  }
+]

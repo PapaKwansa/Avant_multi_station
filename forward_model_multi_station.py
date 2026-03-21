@@ -1,4 +1,3 @@
-# forward_model.py
 import os
 import numpy as np
 import pandas as pd
@@ -81,7 +80,8 @@ def forward_model_multi_station(
     s=None, a0=None, b0=None, c0=None,
     nu=0.25, h=2500.0, E=1.0e10, theta_deg=0.0,
     alpha=0.8, station_names=None,
-    debug=False
+    debug=False,
+    flip_exy=True,
 ):
     """
     Multi-station forward model.
@@ -156,7 +156,6 @@ def forward_model_multi_station(
         pass
 
     # Store 4 observed components per station: eXX, eYY, eXY, eZZ
-    # Shape: (Nt, Ns * 4)
     strain_data = np.zeros((Nt, Ns * 4), dtype=float)
 
     for it, p_val in enumerate(p_series):
@@ -207,6 +206,11 @@ def forward_model_multi_station(
             else:
                 exx_p, eyy_p, exy_p, exz_p, eyz_p, ezz_p = exx, eyy, exy, exz, eyz, ezz
 
+            # Mapping correction from diagnostic:
+            # keep rotation, flip eXY sign only
+            if flip_exy:
+                exy_p = -exy_p
+
             if debug and it == peak_idx and js == 0:
                 print(f"[DEBUG] rotated components:")
                 print(f"   exx={exx_p:.6g}, eyy={eyy_p:.6g}, exy={exy_p:.6g}, ezz={ezz_p:.6g}")
@@ -245,9 +249,6 @@ def forward_model_multi_station(
     return df
 
 
-# -------------------------------------------------------------------
-# Convenience wrapper for inversion / PyDREAM
-# -------------------------------------------------------------------
 def strain_dataset(
     pmax, tpeak, d, time,
     x, y, z,
@@ -258,13 +259,6 @@ def strain_dataset(
 ):
     """
     Wrapper for forward_model_multi_station.
-
-    Returns columns:
-        time_s,
-        eXX_S1 ... eXX_Sn,
-        eYY_S1 ... eYY_Sn,
-        eXY_S1 ... eXY_Sn,
-        eZZ_S1 ... eZZ_Sn
     """
     return forward_model_multi_station(
         pmax=pmax,
@@ -290,12 +284,10 @@ def strain_dataset(
         alpha=kwargs.get("alpha", None),
         station_names=kwargs.get("station_names", None),
         debug=kwargs.get("debug", False),
+        flip_exy=kwargs.get("flip_exy", True),
     )
 
 
-# -------------------------------------------------------------------
-# Save dataset function
-# -------------------------------------------------------------------
 def save_dataset_to_excel(dataset, out_path):
     """
     Save dataset to Excel or fallback CSV.
@@ -310,9 +302,6 @@ def save_dataset_to_excel(dataset, out_path):
         return csv_path
 
 
-# -------------------------------------------------------------------
-# Optional main execution block for testing
-# -------------------------------------------------------------------
 if __name__ == "__main__":
     if multi_stations_input is None or not hasattr(multi_stations_input, "read_input"):
         raise RuntimeError("`multi_stations_input.read_input()` not found")
@@ -320,7 +309,6 @@ if __name__ == "__main__":
     params = multi_stations_input.read_input()
     station_names = stations_df["station"].astype(str).str.strip().values
 
-    # Defaults for standalone testing
     s0 = params.get("s", 100.0)
     a0 = params.get("a0", 1.0)
     b0 = params.get("b0", 25.0 / 175.0)
@@ -355,6 +343,7 @@ if __name__ == "__main__":
         x0_prime=params.get("x0_prime", 0.0),
         y0_prime=params.get("y0_prime", 0.0),
         debug=True,
+        flip_exy=True,
     )
 
     out_file = os.path.join(os.path.dirname(__file__), "strain_dataset_output.xlsx")
