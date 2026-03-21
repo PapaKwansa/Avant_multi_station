@@ -7,43 +7,55 @@ from scipy.stats import uniform
 nu = 0.25         # Poisson ratio [-]
 alpha = 0.8       # Biot coefficient [-]
 
+# ---------------------- FIXED GEOMETRY FROM LATEST SEARCH ----------------------
+# Provisional best geometry from the shape inversion
+a_fixed = 41.30990174524372
+b_fixed = 7.253122065103316
+c_fixed = 1612.2673545065068
+
 # ---------------------- INCLUSION (fixed center) ----------------------
-x0_prime = -208.33
-y0_prime = 83.33
-h = 2400  # can fix or later invert
+x0_prime = -208.33333333333337
+y0_prime = 83.33333333333326
+h = 2400.0
 
 # ---------------------- STATIONS ----------------------
-stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'AVANT_stations.csv'))
-station_names = stations_df['station'].astype(str).str.strip().values
-x_prime = stations_df['x_prime'].values
-y_prime = stations_df['y_prime'].values
-z = stations_df['depth'].values
+stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
+station_names = stations_df["station"].astype(str).str.strip().values
+x_prime = stations_df["x_prime"].values
+y_prime = stations_df["y_prime"].values
+z = stations_df["depth"].values
 
 # ---------------------- PRESSURE ----------------------
-pmax = 9.75e6  # Pa
-tpeak = 393333
-d = 0.6
+pmax = 9.75e6
+tpeak = 393333.0
+d = 0.4
+
 obs_df = pd.read_csv("avant_cleaned_strain.csv")
 time_vals = obs_df["time_s"].values
 
-# ---------------------- GEOMETRY RATIOS ----------------------
-a0 = 1.0          # base scale
-b0 = 25.0 / 175.0
-c0 = 125.0 / 175.0
-theta_deg_start = -60
+# ---------------------- NOISE SCALE ----------------------
+# Fixed likelihood scale for the inversion; not sampled as a parameter.
+# You can tune this later if needed.
+sigma_noise = 75.0
 
 # ---------------------- PRIORS ----------------------
+# Main inversion parameters:
+#   - E
+#   - theta_deg
+#
+# Geometry is fixed here and should not be re-inverted in this stage.
 priors = {
-    "s": uniform(loc=50.0, scale=150.0),
-    "E": uniform(loc=0.8e10, scale=0.4e10),
-    "theta_deg": uniform(loc=theta_deg_start - 15.0, scale=30.0),
-    "sigma": uniform(loc=1e-9, scale=1e-8),
+    "E": uniform(loc=0.5e10, scale=2.5e10),        # 0.5e10 to 3.0e10
+    "theta_deg": uniform(loc=-90.0, scale=180.0),  # -90 to +90 degrees
 }
 
 def read_input():
     return {
         "nu": nu,
         "alpha": alpha,
+        "a_fixed": a_fixed,
+        "b_fixed": b_fixed,
+        "c_fixed": c_fixed,
         "h": h,
         "x0_prime": x0_prime,
         "y0_prime": y0_prime,
@@ -54,12 +66,9 @@ def read_input():
         "tpeak": tpeak,
         "d": d,
         "time": time_vals,
-        "a0": a0,
-        "b0": b0,
-        "c0": c0,
-        "theta_deg_start": theta_deg_start,
+        "sigma_noise": sigma_noise,
         "station_names": station_names,
-        "priors": priors
+        "priors": priors,
     }
 
 get_params = read_input()
