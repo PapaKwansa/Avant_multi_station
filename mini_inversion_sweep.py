@@ -1,112 +1,213 @@
-# full_inversion_a_b_c.py
+# mini_inversion_sweep_pmax_refine.py
+import os
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import differential_evolution
+
 from forward_model_multi_station import forward_model_multi_station
+import multi_stations_input as input_data
 
-# -------------------- USER INPUT --------------------
-df_obs = pd.read_csv("avant_cleaned_strain.csv")
-time_vals = df_obs["time_s"].values
-strain_cols = [col for col in df_obs.columns if "strain_" in col]
 
-stations_df = pd.read_csv("AVANT_stations.csv")
-x_prime = stations_df["x_prime"].values
-y_prime = stations_df["y_prime"].values
-z = stations_df["depth"].values
+np.random.seed(42)
 
-# -------------------- PARAMETER BOUNDS --------------------
-# Now we optimize a, b, c directly instead of s
-param_names = [
-    "a", "b", "c", "E", "theta_deg", "sigma", "h",
-    "x0_prime", "y0_prime", "nu", "alpha", "pmax", "tpeak", "d"
+BASE_DIR = os.path.dirname(__file__)
+STATION_FILE = os.path.join(BASE_DIR, "AVANT_stations.csv")
+OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
+
+params = input_data.read_input()
+
+stations_df = pd.read_csv(STATION_FILE)
+stations_df["station"] = stations_df["station"].astype(str).str.strip()
+
+station_names = stations_df["station"].values
+x_prime = stations_df["x_prime"].values.astype(float)
+y_prime = stations_df["y_prime"].values.astype(float)
+z = stations_df["depth"].values.astype(float)
+
+obs_df = pd.read_csv(OBSERVED_FILE)
+obs_df = obs_df.drop_duplicates().reset_index(drop=True)
+
+time_vals = obs_df["time_s"].values.astype(float)
+
+model_cols = [
+    f"{comp}_{sname}"
+    for comp in ["eXX", "eYY", "eXY", "eZZ"]
+    for sname in station_names
 ]
 
-param_bounds = [
-    (50, 200),     # a
-    (5, 50),       # b
-    (50, 150),     # c
-    (0.8e10, 1.2e10),   # E
-    (-30, 0),      # theta_deg
-    (1e-9, 1e-8),  # sigma (optional)
-    (1000, 4000),  # h
-    (0, 0),        # x0_prime fixed at 0
-    (0, 0),        # y0_prime fixed at 0
-    (0.2, 0.35),   # nu
-    (0.5, 1.0),    # alpha
-    (5e6, 15e6),   # pmax
-    (5, 15),       # tpeak
-    (1, 5)         # d
-]
-
-# -------------------- RMSE FUNCTION --------------------
-def compute_rmse(params):
-    a_val, b_val, c_val, E_val, theta_val, sigma_val, h_val, x0_val, y0_val, nu_val, alpha_val, pmax_val, tpeak_val, d_val = params
-    df_pred = forward_model_multi_station(
-        pmax=pmax_val, tpeak=tpeak_val, d=d_val,
-        time=time_vals,
-        x_prime=x_prime, y_prime=y_prime,
-        x0_prime=x0_val, y0_prime=y0_val, z=z,
-        a=a_val, b=b_val, c=c_val, nu=nu_val, h=h_val,
-        E=E_val, theta_deg=theta_val, alpha=alpha_val
+non_time_cols = [c for c in obs_df.columns if c != "time_s"]
+if all(c in obs_df.columns for c in model_cols):
+    obs_cols = model_cols
+elif len(non_time_cols) == len(model_cols):
+    obs_cols = non_time_cols
+else:
+    raise RuntimeError(
+        f"Observed data layout mismatch. Found {len(non_time_cols)} non-time columns, expected {len(model_cols)}."
     )
-    pred = df_pred[strain_cols].values
-    obs = df_obs[strain_cols].values
-    rmse = np.sqrt(np.mean((pred - obs)**2))
-    return rmse
 
-# -------------------- PARAMETER SENSITIVITY SWEEP --------------------
-def sweep_parameter(idx, n_points=15):
-    sweep_vals = np.linspace(param_bounds[idx][0], param_bounds[idx][1], n_points)
-    rmse_vals = []
-    mid_vals = [(low+high)/2 for (low, high) in param_bounds]
-    for val in sweep_vals:
-        params = mid_vals.copy()
-        params[idx] = val
-        rmse_vals.append(compute_rmse(params))
-    plt.figure()
-    plt.plot(sweep_vals, rmse_vals, 'o-', lw=2)
-    plt.xlabel(param_names[idx])
-    plt.ylabel("RMSE")
-    plt.title(f"Sensitivity sweep: {param_names[idx]}")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(f"sensitivity_{param_names[idx]}.png", dpi=300)
-    plt.close()
-    print(f"Sensitivity plot saved: sensitivity_{param_names[idx]}.png")
+obs_matrix = obs_df[obs_cols].values.astype(float)
 
-# Run sweeps for a, b, c to see effect
-for i in range(3):
-    sweep_parameter(i)
+print(f"[INFO] Stations: {station_names}")
+print(f"[INFO] Observed matrix shape: {obs_matrix.shape}")
+print(f"[INFO] Using observed columns: {obs_cols[:4]} ... {obs_cols[-4:]}")
+print(f"[INFO] Observed min/max: {np.min(obs_matrix):.6g} / {np.max(obs_matrix):.6g}")
+print(f"[INFO] Observed mean abs: {np.mean(np.abs(obs_matrix)):.6g}")
+print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 
-# -------------------- OPTIMIZATION --------------------
-result = differential_evolution(compute_rmse, param_bounds, maxiter=150, seed=42)
-optimal_params = result.x
-min_rmse = result.fun
-print("\nOptimal parameters found:")
-for name, val in zip(param_names, optimal_params):
-    print(f"{name}: {val:.4g}")
-print(f"Minimum RMSE: {min_rmse:.4f}")
+nu = params["nu"]
+alpha = params["alpha"]
 
-# -------------------- VALIDATE OPTIMAL PARAMETERS --------------------
-a_opt, b_opt, c_opt, E_opt, theta_opt, sigma_opt, h_opt, x0_opt, y0_opt, nu_opt, alpha_opt, pmax_opt, tpeak_opt, d_opt = optimal_params
-df_pred_opt = forward_model_multi_station(
-    pmax=pmax_opt, tpeak=tpeak_opt, d=d_opt,
-    time=time_vals, x_prime=x_prime, y_prime=y_prime,
-    x0_prime=x0_opt, y0_prime=y0_opt, z=z,
-    a=a_opt, b=b_opt, c=c_opt, nu=nu_opt, h=h_opt,
-    E=E_opt, theta_deg=theta_opt, alpha=alpha_opt
-)
+s_fixed = 244.0
+h_fixed = 2450.0
+x0_fixed = -208.33333333333337
+y0_fixed = 83.33333333333326
+theta_fixed = -60.0
+tpeak_fixed = 393333.0
+d_fixed = 0.6
+E_fixed = 0.8e10
 
-plt.figure(figsize=(12,6))
-for i in range(min(6, len(strain_cols))):
-    plt.plot(time_vals, df_obs[strain_cols[i]], 'k.', label=f"Obs {strain_cols[i]}")
-    plt.plot(time_vals, df_pred_opt[strain_cols[i]], '-', label=f"Pred {strain_cols[i]}")
-plt.xlabel("Time (s)")
-plt.ylabel("Strain (nε)")
-plt.title("Predicted vs Observed Strains (First 6 components)")
-plt.legend(fontsize=8)
+a0 = params["a0"]
+b0 = params["b0"]
+c0 = params["c0"]
+
+baseline_pmax = float(params.get("pmax", 1.0e7))
+
+print("[INFO] Fixed values for this sweep:")
+print(f"       s = {s_fixed}")
+print(f"       h = {h_fixed}")
+print(f"       x0_prime = {x0_fixed}")
+print(f"       y0_prime = {y0_fixed}")
+print(f"       theta_deg = {theta_fixed}")
+print(f"       tpeak = {tpeak_fixed}")
+print(f"       d = {d_fixed}")
+print(f"       E = {E_fixed:.6g}")
+print(f"[INFO] Baseline pmax = {baseline_pmax:.6g}")
+
+
+def make_predicted_matrix(pmax):
+    a = s_fixed * a0
+    b = s_fixed * b0
+    c = s_fixed * c0
+
+    df_pred = forward_model_multi_station(
+        pmax=pmax,
+        tpeak=tpeak_fixed,
+        d=d_fixed,
+        time=time_vals,
+        x_prime=x_prime,
+        y_prime=y_prime,
+        x0_prime=x0_fixed,
+        y0_prime=y0_fixed,
+        z=z,
+        a=a,
+        b=b,
+        c=c,
+        nu=nu,
+        h=h_fixed,
+        E=E_fixed,
+        theta_deg=theta_fixed,
+        alpha=alpha,
+        station_names=station_names,
+        debug=False,
+    )
+
+    missing_pred = [c for c in model_cols if c not in df_pred.columns]
+    if missing_pred:
+        raise RuntimeError(f"Forward model missing columns: {missing_pred}")
+
+    return df_pred[model_cols].values.astype(float)
+
+
+def rmse(pred, obs):
+    return float(np.sqrt(np.mean((pred - obs) ** 2)))
+
+
+def best_scalar_multiplier(pred, obs):
+    p = pred.reshape(-1)
+    o = obs.reshape(-1)
+    denom = np.dot(p, p)
+    if denom <= 0:
+        return np.nan
+    return float(np.dot(p, o) / denom)
+
+
+baseline_pred = make_predicted_matrix(baseline_pmax)
+
+print("\n[INFO] Baseline diagnostic")
+print(f"[INFO] baseline pred min/max: {np.min(baseline_pred):.6g} / {np.max(baseline_pred):.6g}")
+print(f"[INFO] baseline pred mean abs: {np.mean(np.abs(baseline_pred)):.6g}")
+print(f"[INFO] baseline RMSE: {rmse(baseline_pred, obs_matrix):.6g}")
+print(f"[INFO] baseline best scalar a: {best_scalar_multiplier(baseline_pred, obs_matrix):.6g}")
+
+pmax_vals = np.linspace(7.0e6, 1.3e7, 25)
+
+rmse_vals = []
+scalar_vals = []
+
+print("\n[INFO] Sweeping pmax...")
+for pmax in pmax_vals:
+    pred = make_predicted_matrix(pmax)
+    rmse_vals.append(rmse(pred, obs_matrix))
+    scalar_vals.append(best_scalar_multiplier(pred, obs_matrix))
+
+rmse_vals = np.asarray(rmse_vals)
+scalar_vals = np.asarray(scalar_vals)
+
+best_idx = int(np.argmin(rmse_vals))
+best_pmax = float(pmax_vals[best_idx])
+best_rmse = float(rmse_vals[best_idx])
+best_scalar = float(scalar_vals[best_idx])
+
+print(f"\n[RESULT] Best pmax = {best_pmax:.6g}")
+print(f"[RESULT] Best RMSE = {best_rmse:.6g}")
+print(f"[RESULT] Best scalar at best pmax = {best_scalar:.6g}")
+
+results = {
+    "best_pmax": best_pmax,
+    "best_rmse": best_rmse,
+    "best_scalar": best_scalar,
+    "pmax_values": pmax_vals.tolist(),
+    "rmse_values": rmse_vals.tolist(),
+    "scalar_values": scalar_vals.tolist(),
+    "baseline_pmax": baseline_pmax,
+    "s_fixed": s_fixed,
+    "h_fixed": h_fixed,
+    "x0_fixed": x0_fixed,
+    "y0_fixed": y0_fixed,
+    "theta_fixed": theta_fixed,
+    "tpeak_fixed": tpeak_fixed,
+    "d_fixed": d_fixed,
+    "E_fixed": E_fixed,
+}
+with open("pmax_refine_results.json", "w") as f:
+    json.dump(results, f, indent=2)
+print("[INFO] Saved pmax_refine_results.json")
+
+plt.figure(figsize=(7, 4))
+plt.plot(pmax_vals, rmse_vals, "o-", linewidth=2)
+plt.xlabel("pmax")
+plt.ylabel("RMSE")
+plt.title("Refined sweep: pmax")
+plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig("pred_vs_obs_strains_abc.png", dpi=300)
+plt.savefig("pmax_refine_rmse.png", dpi=200)
 plt.close()
-print("Predicted vs observed plot saved: pred_vs_obs_strains_abc.png")
+print("[INFO] Saved pmax_refine_rmse.png")
+
+best_pred = make_predicted_matrix(best_pmax)
+
+plt.figure(figsize=(16, 12))
+for i in range(min(16, obs_matrix.shape[1])):
+    ax = plt.subplot(4, 4, i + 1)
+    ax.plot(time_vals, obs_matrix[:, i], "k.", markersize=2, label="obs")
+    ax.plot(time_vals, best_pred[:, i], "r-", linewidth=1.2, label="pred")
+    ax.set_title(model_cols[i], fontsize=9)
+    ax.grid(True, alpha=0.25)
+    if i == 0:
+        ax.legend(fontsize=8)
+
+plt.tight_layout()
+plt.savefig("pmax_refine_best_fit.png", dpi=200)
+plt.close()
+print("[INFO] Saved pmax_refine_best_fit.png")

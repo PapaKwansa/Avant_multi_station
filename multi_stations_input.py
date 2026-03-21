@@ -8,9 +8,9 @@ nu = 0.25         # Poisson ratio [-]
 alpha = 0.8       # Biot coefficient [-]
 
 # ---------------------- INCLUSION (fixed center) ----------------------
-x0_prime = -67.04
-y0_prime = -129.72
-h = 2500  # can fix or later invert
+x0_prime = -208.33
+y0_prime = 83.33
+h = 2400  # can fix or later invert
 
 # ---------------------- STATIONS ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), 'AVANT_stations.csv'))
@@ -20,9 +20,9 @@ y_prime = stations_df['y_prime'].values
 z = stations_df['depth'].values
 
 # ---------------------- PRESSURE ----------------------
-pmax = 10e6
-tpeak = 8
-d = 2
+pmax = 9.75e6  # Pa
+tpeak = 393333
+d = 0.6
 obs_df = pd.read_csv("avant_cleaned_strain.csv")
 time_vals = obs_df["time_s"].values
 
@@ -30,7 +30,7 @@ time_vals = obs_df["time_s"].values
 a0 = 1.0          # base scale
 b0 = 25.0 / 175.0
 c0 = 125.0 / 175.0
-theta_deg_start = -17.2
+theta_deg_start = -60
 
 # ---------------------- PRIORS ----------------------
 priors = {
@@ -62,4 +62,4 @@ def read_input():
         "priors": priors
     }
 
-get_params = read_input
+get_params = read_input()
