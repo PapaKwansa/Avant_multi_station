@@ -81,7 +81,7 @@ def forward_model_multi_station(
     nu=0.25, h=2500.0, E=1.0e10, theta_deg=0.0,
     alpha=0.8, station_names=None,
     debug=False,
-    flip_exy=True,
+
 ):
     """
     Multi-station forward model.
@@ -208,8 +208,7 @@ def forward_model_multi_station(
 
             # Mapping correction from diagnostic:
             # keep rotation, flip eXY sign only
-            if flip_exy:
-                exy_p = -exy_p
+            # Do not switch signs of eXX, eYY, eZZ since that would be a more fundamental issue in the strain kernel
 
             if debug and it == peak_idx and js == 0:
                 print(f"[DEBUG] rotated components:")

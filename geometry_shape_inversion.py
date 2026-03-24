@@ -1,4 +1,4 @@
-# geometry_shape_inversion_logspace.py
+# geometry_shape_inversion_fixed_thickness.py
 import os
 import json
 import numpy as np
@@ -6,7 +6,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from scipy.optimize import differential_evolution
-
 from forward_model_multi_station import forward_model_multi_station
 import multi_stations_input as input_data
 
@@ -77,20 +76,30 @@ print(f"[INFO] Observed mean abs: {np.mean(np.abs(obs_matrix)):.6g}")
 print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 
 # ============================================================
-# Fixed best values from prior sweeps
+# Fixed physical values
 # ============================================================
 
 nu = float(params["nu"])
 alpha = float(params["alpha"])
 
-pmax_fixed = 9.75e6
-tpeak_fixed = 393333.0
-d_fixed = 0.4
-E_fixed = 1.0e10
-h_fixed = 2400.0
-x0_fixed = -208.33333333333337
-y0_fixed = 83.33333333333326
-theta_fixed = -60.0
+# COMSOL-based values
+pmax_fixed = 1.0e6
+tpeak_fixed = float(params.get("tpeak", 393333.0))
+d_fixed = float(params.get("d", 0.4))
+E_fixed = float(params.get("E", 1.0e10))
+h_fixed = 518.29
+x0_fixed = float(params.get("x0_prime", 0.0))
+y0_fixed = float(params.get("y0_prime", 0.0))
+theta_fixed = -15.0
+
+# FIX thickness:
+# current forward kernel uses z ± c, so c is semi-thickness
+lens_thickness_full = 5.0
+c_fixed = lens_thickness_full / 2.0
+# If your convention is that c is the full thickness, use:
+# c_fixed = 5.0
+
+flip_exy = False
 
 print("[INFO] Fixed values:")
 print(f"       pmax = {pmax_fixed:.6g}")
@@ -101,27 +110,18 @@ print(f"       h = {h_fixed:.6g}")
 print(f"       x0_prime = {x0_fixed:.6g}")
 print(f"       y0_prime = {y0_fixed:.6g}")
 print(f"       theta_deg = {theta_fixed:.6g}")
+print(f"       lens_thickness_full = {lens_thickness_full:.6g}")
+print(f"       c_fixed = {c_fixed:.6g}")
+print(f"       flip_exy = {flip_exy}")
 
 # ============================================================
-# Geometry parameterization
-#   a = L
-#   b = L * rb
-#   c = L * rb * rc
-#
-# Use logs for ratios:
-#   log_rb = log(rb)
-#   log_rc = log(rc)
+# Helpers
 # ============================================================
 
 def rmse(pred, obs):
     return float(np.sqrt(np.mean((pred - obs) ** 2)))
 
-
 def best_scalar_multiplier(pred, obs):
-    """
-    Least-squares scalar a minimizing ||a*pred - obs||^2.
-    Useful for checking amplitude mismatch.
-    """
     p = pred.reshape(-1)
     o = obs.reshape(-1)
     denom = np.dot(p, p)
@@ -129,15 +129,7 @@ def best_scalar_multiplier(pred, obs):
         return np.nan
     return float(np.dot(p, o) / denom)
 
-
-def make_predicted_matrix(L, log_rb, log_rc):
-    rb = float(np.exp(log_rb))
-    rc = float(np.exp(log_rc))
-
-    a = L
-    b = L * rb
-    c = L * rb * rc
-
+def make_predicted_matrix(a, b):
     df_pred = forward_model_multi_station(
         pmax=pmax_fixed,
         tpeak=tpeak_fixed,
@@ -150,7 +142,7 @@ def make_predicted_matrix(L, log_rb, log_rc):
         z=z,
         a=a,
         b=b,
-        c=c,
+        c=c_fixed,
         nu=nu,
         h=h_fixed,
         E=E_fixed,
@@ -158,7 +150,6 @@ def make_predicted_matrix(L, log_rb, log_rc):
         alpha=alpha,
         station_names=station_names,
         debug=False,
-        flip_exy=True,   # forward model handles the sign correction once
     )
 
     missing_pred = [c for c in model_cols if c not in df_pred.columns]
@@ -167,37 +158,39 @@ def make_predicted_matrix(L, log_rb, log_rc):
 
     return df_pred[model_cols].values.astype(float)
 
+# ============================================================
+# Baseline diagnostic
+# ============================================================
+
+a_guess = 40.0
+b_guess = 8.0
+
+baseline_pred = make_predicted_matrix(a_guess, b_guess)
+
+print("\n[INFO] Baseline diagnostic")
+print(f"[INFO] baseline a = {a_guess:.6g}")
+print(f"[INFO] baseline b = {b_guess:.6g}")
+print(f"[INFO] baseline pred min/max: {np.min(baseline_pred):.6g} / {np.max(baseline_pred):.6g}")
+print(f"[INFO] baseline pred mean abs: {np.mean(np.abs(baseline_pred)):.6g}")
+print(f"[INFO] baseline RMSE: {rmse(baseline_pred, obs_matrix):.6g}")
+print(f"[INFO] baseline best scalar a: {best_scalar_multiplier(baseline_pred, obs_matrix):.6g}")
+
+# ============================================================
+# Optimize a and b
+# ============================================================
 
 def objective(x):
-    L, log_rb, log_rc = x
-    pred = make_predicted_matrix(L, log_rb, log_rc)
+    a_val, b_val = x
+    pred = make_predicted_matrix(a_val, b_val)
     return rmse(pred, obs_matrix)
 
-
-# ============================================================
-# Search bounds
-# ============================================================
-# These are deliberately wider than the first run.
-# If rc again hits the top bound, widen it further.
-#
-# L      : overall size
-# rb     : b/a
-# rc     : c/b
-#
-# In log-space:
-# log_rb = log(rb)
-# log_rc = log(rc)
-# ============================================================
-
 bounds = [
-    (20.0, 150.0),                 # L
-    (np.log(0.08), np.log(0.60)),  # log(rb)
-    (np.log(10.0), np.log(300.0)), # log(rc)
+    (1.0, 20000.0),   # a
+    (1.0, 80000.0),    # b
 ]
 
-print("\n[INFO] Starting differential evolution over:")
-print("       L, log_rb, log_rc")
-print(f"       bounds = {bounds}")
+print("\n[INFO] Starting differential evolution over a and b...")
+print(f"[INFO] bounds = {bounds}")
 
 result = differential_evolution(
     objective,
@@ -210,27 +203,17 @@ result = differential_evolution(
     workers=1,
 )
 
-L_best, log_rb_best, log_rc_best = result.x
-rb_best = float(np.exp(log_rb_best))
-rc_best = float(np.exp(log_rc_best))
+a_best, b_best = result.x
 best_rmse = float(result.fun)
-
-a_best = L_best
-b_best = L_best * rb_best
-c_best = L_best * rb_best * rc_best
-
-print("\n[RESULT]")
-print(f"L       = {L_best:.6g}")
-print(f"rb      = {rb_best:.6g}")
-print(f"rc      = {rc_best:.6g}")
-print(f"a       = {a_best:.6g}")
-print(f"b       = {b_best:.6g}")
-print(f"c       = {c_best:.6g}")
-print(f"RMSE    = {best_rmse:.6g}")
-
-best_pred = make_predicted_matrix(L_best, log_rb_best, log_rc_best)
+best_pred = make_predicted_matrix(a_best, b_best)
 best_scalar = best_scalar_multiplier(best_pred, obs_matrix)
 
+print("\n[RESULT]")
+print(f"a = {a_best:.6g}")
+print(f"b = {b_best:.6g}")
+print(f"c = {c_fixed:.6g}")
+print(f"b/a = {b_best / a_best:.6g}")
+print(f"RMSE = {best_rmse:.6g}")
 print(f"best scalar multiplier = {best_scalar:.6g}")
 
 # ============================================================
@@ -238,18 +221,19 @@ print(f"best scalar multiplier = {best_scalar:.6g}")
 # ============================================================
 
 results = {
-    "L_best": float(L_best),
-    "rb_best": float(rb_best),
-    "rc_best": float(rc_best),
     "a_best": float(a_best),
     "b_best": float(b_best),
-    "c_best": float(c_best),
-    "rmse": best_rmse,
+    "c_fixed": float(c_fixed),
+    "b_over_a": float(b_best / a_best),
+    "rmse": float(best_rmse),
     "best_scalar": float(best_scalar),
+    "baseline": {
+        "a": float(a_guess),
+        "b": float(b_guess),
+    },
     "bounds": [
         [float(bounds[0][0]), float(bounds[0][1])],
         [float(bounds[1][0]), float(bounds[1][1])],
-        [float(bounds[2][0]), float(bounds[2][1])],
     ],
     "fixed_values": {
         "pmax": pmax_fixed,
@@ -262,16 +246,17 @@ results = {
         "theta_deg": theta_fixed,
         "nu": nu,
         "alpha": alpha,
+        "lens_thickness_full": lens_thickness_full,
     },
 }
 
-with open("geometry_shape_results_logspace.json", "w") as f:
+with open("geometry_shape_results_fixed_thickness.json", "w") as f:
     json.dump(results, f, indent=2)
 
-print("[INFO] Saved geometry_shape_results_logspace.json")
+print("[INFO] Saved geometry_shape_results_fixed_thickness.json")
 
 # ============================================================
-# Plot RMSE vs observed/predicted
+# Plot best fit
 # ============================================================
 
 plt.figure(figsize=(16, 12))
@@ -285,19 +270,19 @@ for i in range(min(16, obs_matrix.shape[1])):
         ax.legend(fontsize=8)
 
 plt.tight_layout()
-plt.savefig("geometry_shape_best_fit_logspace.png", dpi=200)
+plt.savefig("geometry_shape_best_fit_fixed_thickness.png", dpi=200)
 plt.close()
-print("[INFO] Saved geometry_shape_best_fit_logspace.png")
+print("[INFO] Saved geometry_shape_best_fit_fixed_thickness.png")
 
 # ============================================================
-# Plot optional RMSE summary against reconstructed dimensions
+# Plot reconstructed dimensions
 # ============================================================
 
 plt.figure(figsize=(8, 4))
-plt.bar(["a", "b", "c"], [a_best, b_best, c_best])
+plt.bar(["a", "b", "c"], [a_best, b_best, c_fixed])
 plt.ylabel("meters")
-plt.title("Best reconstructed geometry")
+plt.title("Best reconstructed geometry with fixed thickness")
 plt.tight_layout()
-plt.savefig("geometry_shape_dimensions_logspace.png", dpi=200)
+plt.savefig("geometry_shape_dimensions_fixed_thickness.png", dpi=200)
 plt.close()
-print("[INFO] Saved geometry_shape_dimensions_logspace.png")
+print("[INFO] Saved geometry_shape_dimensions_fixed_thickness.png")
