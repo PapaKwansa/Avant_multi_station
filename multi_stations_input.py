@@ -9,14 +9,15 @@ alpha = 0.8       # Biot coefficient [-]
 
 # ---------------------- FIXED GEOMETRY FROM LATEST SEARCH ----------------------
 # Provisional best geometry from the shape inversion
-a_fixed = 41.30990174524372
-b_fixed = 7.253122065103316
-c_fixed = 1612.2673545065068
-
+a_fixed = 300
+b_fixed = 5
+c_fixed = 580
+E = 0.2e10
+theta_deg = 0.0
 # ---------------------- INCLUSION (fixed center) ----------------------
 x0_prime = -208.33333333333337
 y0_prime = 83.33333333333326
-h = 2400.0
+h = 518.29  # From latest geometry inversion; should be close to the true depth of the inclusion center             
 
 # ---------------------- STATIONS ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
@@ -36,7 +37,7 @@ time_vals = obs_df["time_s"].values
 # ---------------------- NOISE SCALE ----------------------
 # Fixed likelihood scale for the inversion; not sampled as a parameter.
 # You can tune this later if needed.
-sigma_noise = 75.0
+sigma_noise = 2
 
 # ---------------------- PRIORS ----------------------
 # Main inversion parameters:

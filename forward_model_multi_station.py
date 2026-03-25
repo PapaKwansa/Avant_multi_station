@@ -78,7 +78,7 @@ def forward_model_multi_station(
     z,
     a=None, b=None, c=None,
     s=None, a0=None, b0=None, c0=None,
-    nu=0.25, h=2500.0, E=1.0e10, theta_deg=0.0,
+    nu=0.25, h=518.28, E=2.0e9, theta_deg=-345.0,
     alpha=0.8, station_names=None,
     debug=False,
 
@@ -283,7 +283,6 @@ def strain_dataset(
         alpha=kwargs.get("alpha", None),
         station_names=kwargs.get("station_names", None),
         debug=kwargs.get("debug", False),
-        flip_exy=kwargs.get("flip_exy", True),
     )
 
 
@@ -308,15 +307,18 @@ if __name__ == "__main__":
     params = multi_stations_input.read_input()
     station_names = stations_df["station"].astype(str).str.strip().values
 
-    s0 = params.get("s", 100.0)
-    a0 = params.get("a0", 1.0)
-    b0 = params.get("b0", 25.0 / 175.0)
-    c0 = params.get("c0", 125.0 / 175.0)
+    s0 = params.get("s", 1.0)
+
+    # Semi-axes of the lens (half-lengths)
+    a0 = params.get("a0", 150.0)   # short axis / 2
+    b0 = params.get("b0", 2.5)     # thickness / 2
+    c0 = params.get("c0", 290.0)   # long axis / 2
 
     a, b, c = geometry_from_scale(s0, a0, b0, c0)
 
-    E0 = params.get("E", 1.0e10)
-    theta0 = params.get("theta_deg", params.get("theta_deg_start", -17.2))
+
+    E0 = params.get("E", 2.0e9)
+    theta0 = params.get("theta_deg", params.get("theta_deg_start", -345.0))
 
     df_out = strain_dataset(
         pmax=params["pmax"],
@@ -342,7 +344,6 @@ if __name__ == "__main__":
         x0_prime=params.get("x0_prime", 0.0),
         y0_prime=params.get("y0_prime", 0.0),
         debug=True,
-        flip_exy=True,
     )
 
     out_file = os.path.join(os.path.dirname(__file__), "strain_dataset_output.xlsx")
