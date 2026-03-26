@@ -155,11 +155,11 @@ def forward_model_multi_station(
             # No rotation applied — COMSOL geometry is unrotated
             exx, eyy, ezz = S[0, 0], S[1, 1], S[2, 2]
             exy = S[0, 1]
-            sign_fix = -1.0  # keep as in your original model
-            exx_list.append(sign_fix * exx * 1e9)
-            eyy_list.append(sign_fix * eyy * 1e9)
-            exy_list.append(sign_fix * exy * 1e9)
-            ezz_list.append(sign_fix * ezz * 1e9)
+             # keep as in your original model
+            exx_list.append(exx * 1e9)
+            eyy_list.append(eyy * 1e9)
+            exy_list.append(exy * 1e9)
+            ezz_list.append(ezz * 1e9)
 
         strain_data[it, :] = np.concatenate([
             np.asarray(exx_list, dtype=float),

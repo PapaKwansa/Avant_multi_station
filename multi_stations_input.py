@@ -8,8 +8,8 @@ nu = 0.25
 alpha = 0.8
 
 # ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
-a_fixed = 290.0   # short axis / 2
-b_fixed = 2.5     # thickness / 2
+a_fixed = 150.0   # short axis / 2
+b_fixed = 250.0   # thickness / 2
 c_fixed = 150.0   # long axis / 2
 
 # ---------------------- ELASTIC PARAMETERS ----------------------
@@ -30,7 +30,7 @@ y_prime = stations_df["y_prime"].values.astype(float)
 z = stations_df["depth"].values.astype(float)
 
 # ---------------------- PRESSURE HISTORY ----------------------
-pmax = 9.75e6
+pmax = 0.4e6
 tpeak = 393333.0
 d = 0.4
 
