@@ -122,7 +122,7 @@ def best_scalar_multiplier(pred, obs):
         return np.nan
     return float(np.dot(p, o) / denom)
 
-def make_predicted_matrix(x0_prime, y0_prime):
+def make_predicted_matrix(E_val, theta_val):
     df_pred = forward_model_multi_station(
         pmax=pmax_fixed,
         tpeak=tpeak_fixed,
@@ -130,16 +130,16 @@ def make_predicted_matrix(x0_prime, y0_prime):
         time=time_vals,
         x_prime=x_prime,
         y_prime=y_prime,
-        x0_prime=x0_prime,
-        y0_prime=y0_prime,
+        x0_prime=0.0,     # FIXED CENTER
+        y0_prime=0.0,     # FIXED CENTER
         z=z,
         a=a_fixed,
         b=b_fixed,
         c=c_fixed,
         nu=nu,
         h=h_fixed,
-        E=E_fixed,
-        theta_deg=theta_fixed,
+        E=E_val,
+        theta_deg=theta_val,
         alpha=alpha,
         station_names=station_names,
         debug=False,
@@ -155,10 +155,7 @@ def make_predicted_matrix(x0_prime, y0_prime):
 # Baseline diagnostic
 # ============================================================
 
-x0_guess = float(params.get("x0_prime", np.mean(x_prime)))
-y0_guess = float(params.get("y0_prime", np.mean(y_prime)))
-
-baseline_pred = make_predicted_matrix(x0_guess, y0_guess)
+baseline_pred = make_predicted_matrix(E_fixed, theta_fixed)
 
 a_best = best_scalar_multiplier(baseline_pred, obs_matrix)
 rmse_rescaled = rmse(a_best * baseline_pred, obs_matrix)
@@ -166,31 +163,27 @@ rmse_rescaled = rmse(a_best * baseline_pred, obs_matrix)
 print(f"[INFO] baseline best scalar a = {a_best:.6g}")
 print(f"[INFO] baseline RMSE (after rescaling) = {rmse_rescaled:.6g}")
 
-
 print("\n[INFO] Baseline diagnostic")
-print(f"[INFO] baseline x0_prime = {x0_guess:.6g}")
-print(f"[INFO] baseline y0_prime = {y0_guess:.6g}")
+print(f"[INFO] center fixed at (0,0)")
 print(f"[INFO] baseline pred min/max: {np.min(baseline_pred):.6g} / {np.max(baseline_pred):.6g}")
 print(f"[INFO] baseline pred mean abs: {np.mean(np.abs(baseline_pred)):.6g}")
 print(f"[INFO] baseline RMSE: {rmse(baseline_pred, obs_matrix):.6g}")
 print(f"[INFO] baseline best scalar a: {best_scalar_multiplier(baseline_pred, obs_matrix):.6g}")
 
 # ============================================================
-# Optimize x0 and y0
+# Optimize E and theta
 # ============================================================
 
 def objective(x):
-    x0_prime, y0_prime = x
-    pred = make_predicted_matrix(x0_prime, y0_prime)
+    E_val, theta_val = x
+    pred = make_predicted_matrix(E_val, theta_val)
     return rmse(pred, obs_matrix)
 
-# Broad bounds for the inclusion center
-x_bounds = (min(x_prime) - 2000.0, max(x_prime) + 2000.0)
-y_bounds = (min(y_prime) - 2000.0, max(y_prime) + 2000.0)
+E_bounds = (5e9, 3e10)        # Pa
+theta_bounds = (-90.0, 90.0)  # degrees
+bounds = [E_bounds, theta_bounds]
 
-bounds = [x_bounds, y_bounds]
-
-print("\n[INFO] Starting differential evolution over x0_prime and y0_prime...")
+print("\n[INFO] Starting differential evolution over E and theta...")
 print(f"[INFO] bounds = {bounds}")
 
 result = differential_evolution(
@@ -204,14 +197,14 @@ result = differential_evolution(
     workers=1,
 )
 
-x0_best, y0_best = result.x
+E_best, theta_best = result.x
 best_rmse = float(result.fun)
-best_pred = make_predicted_matrix(x0_best, y0_best)
+best_pred = make_predicted_matrix(E_best, theta_best)
 best_scalar = best_scalar_multiplier(best_pred, obs_matrix)
 
 print("\n[RESULT]")
-print(f"x0_prime = {x0_best:.6g}")
-print(f"y0_prime = {y0_best:.6g}")
+print(f"E = {E_best:.6g}")
+print(f"theta_deg = {theta_best:.6g}")
 print(f"RMSE = {best_rmse:.6g}")
 print(f"best scalar multiplier = {best_scalar:.6g}")
 
@@ -220,24 +213,21 @@ print(f"best scalar multiplier = {best_scalar:.6g}")
 # ============================================================
 
 results = {
-    "x0_prime_best": float(x0_best),
-    "y0_prime_best": float(y0_best),
+    "E_best": float(E_best),
+    "theta_deg_best": float(theta_best),
     "rmse": float(best_rmse),
     "best_scalar": float(best_scalar),
-    "baseline": {
-        "x0_prime": float(x0_guess),
-        "y0_prime": float(y0_guess),
-    },
+    "fixed_center": [0.0, 0.0],
     "fixed_values": {
         "pmax": pmax_fixed,
         "tpeak": tpeak_fixed,
         "d": d_fixed,
-        "E": E_fixed,
+        "E_initial": E_fixed,
         "h": h_fixed,
         "a": a_fixed,
         "b": b_fixed,
         "c": c_fixed,
-        "theta_deg": theta_fixed,
+        "theta_initial": theta_fixed,
         "nu": nu,
         "alpha": alpha,
     },
@@ -272,15 +262,15 @@ plt.close()
 print("[INFO] Saved location_fit_xy_best_fit.png")
 
 # ============================================================
-# Plot center result
+# Plot center (fixed)
 # ============================================================
 
 plt.figure(figsize=(6, 5))
 plt.scatter(x_prime, y_prime, label="stations")
-plt.scatter([x0_best], [y0_best], marker="x", s=120, label="best center")
+plt.scatter([0.0], [0.0], marker="x", s=120, label="fixed center (0,0)")
 plt.xlabel("x_prime")
 plt.ylabel("y_prime")
-plt.title("Best inclusion center")
+plt.title("Inclusion center (fixed at 0,0)")
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()

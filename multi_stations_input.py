@@ -8,18 +8,18 @@ nu = 0.25
 alpha = 0.8
 
 # ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
-a_fixed = 150.0   # short axis / 2
+a_fixed = 290.0   # short axis / 2
 b_fixed = 2.5     # thickness / 2
-c_fixed = 290.0   # long axis / 2
+c_fixed = 150.0   # long axis / 2
 
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
 E = 0.2e10
-theta_deg = 0.0   # COMSOL uses no rotation
+theta_deg = -15   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
-x0_prime = -208.33333333333337
-y0_prime = 83.33333333333326
+x0_prime = 0.0
+y0_prime = 0.0
 h = 518.29   # depth of inclusion top
 
 # ---------------------- STATION COORDINATES ----------------------

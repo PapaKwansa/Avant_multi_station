@@ -32,7 +32,7 @@ c = params["c_fixed"]
 x0 = params["x0_prime"]
 y0 = params["y0_prime"]
 
-theta_deg = params["theta_deg"]  # 0.0 in your COMSOL setup
+theta_deg = params["theta_deg"]  # 0.0 in  COMSOL setup
 
 # ------------------------------------------------------------
 # CREATE PLAN-VIEW GRID
