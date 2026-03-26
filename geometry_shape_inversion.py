@@ -83,13 +83,13 @@ print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 nu = float(params.get("nu", 0.25))
 alpha = float(params.get("alpha", 0.8))
 
-pmax_fixed = 1.0e6
+pmax_fixed = 9.75e6
 tpeak_fixed = float(params.get("tpeak", 393333.0))
 d_fixed = float(params.get("d", 0.4))
 
 E_fixed = 2.0e9
 h_fixed = 518.29
-theta_fixed = -345.0
+theta_fixed = 0.0
 
 # Fixed lens geometry
 a_fixed = 150.0
@@ -159,6 +159,13 @@ x0_guess = float(params.get("x0_prime", np.mean(x_prime)))
 y0_guess = float(params.get("y0_prime", np.mean(y_prime)))
 
 baseline_pred = make_predicted_matrix(x0_guess, y0_guess)
+
+a_best = best_scalar_multiplier(baseline_pred, obs_matrix)
+rmse_rescaled = rmse(a_best * baseline_pred, obs_matrix)
+
+print(f"[INFO] baseline best scalar a = {a_best:.6g}")
+print(f"[INFO] baseline RMSE (after rescaling) = {rmse_rescaled:.6g}")
+
 
 print("\n[INFO] Baseline diagnostic")
 print(f"[INFO] baseline x0_prime = {x0_guess:.6g}")

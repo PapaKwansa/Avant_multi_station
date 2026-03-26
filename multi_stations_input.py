@@ -4,70 +4,85 @@ import os
 from scipy.stats import uniform
 
 # ---------------------- MATERIAL ----------------------
-nu = 0.25         # Poisson ratio [-]
-alpha = 0.8       # Biot coefficient [-]
+nu = 0.25
+alpha = 0.8
 
-# ---------------------- FIXED GEOMETRY FROM LATEST SEARCH ----------------------
-# Provisional best geometry from the shape inversion
-a_fixed = 300
-b_fixed = 5
-c_fixed = 580
+# ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
+a_fixed = 150.0   # short axis / 2
+b_fixed = 2.5     # thickness / 2
+c_fixed = 290.0   # long axis / 2
+
+# ---------------------- ELASTIC PARAMETERS ----------------------
+# Initial guess (inversion will explore range)
 E = 0.2e10
-theta_deg = 0.0
-# ---------------------- INCLUSION (fixed center) ----------------------
+theta_deg = 0.0   # COMSOL uses no rotation
+
+# ---------------------- INCLUSION CENTER ----------------------
 x0_prime = -208.33333333333337
 y0_prime = 83.33333333333326
-h = 518.29  # From latest geometry inversion; should be close to the true depth of the inclusion center             
+h = 518.29   # depth of inclusion top
 
-# ---------------------- STATIONS ----------------------
+# ---------------------- STATION COORDINATES ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
 station_names = stations_df["station"].astype(str).str.strip().values
-x_prime = stations_df["x_prime"].values
-y_prime = stations_df["y_prime"].values
-z = stations_df["depth"].values
+x_prime = stations_df["x_prime"].values.astype(float)
+y_prime = stations_df["y_prime"].values.astype(float)
+z = stations_df["depth"].values.astype(float)
 
-# ---------------------- PRESSURE ----------------------
+# ---------------------- PRESSURE HISTORY ----------------------
 pmax = 9.75e6
 tpeak = 393333.0
 d = 0.4
 
+# Time array from observed data
 obs_df = pd.read_csv("avant_cleaned_strain.csv")
-time_vals = obs_df["time_s"].values
+time_vals = obs_df["time_s"].values.astype(float)
 
-# ---------------------- NOISE SCALE ----------------------
-# Fixed likelihood scale for the inversion; not sampled as a parameter.
-# You can tune this later if needed.
+# ---------------------- NOISE ----------------------
 sigma_noise = 2
 
 # ---------------------- PRIORS ----------------------
-# Main inversion parameters:
-#   - E
-#   - theta_deg
-#
-# Geometry is fixed here and should not be re-inverted in this stage.
 priors = {
-    "E": uniform(loc=0.5e10, scale=2.5e10),        # 0.5e10 to 3.0e10
-    "theta_deg": uniform(loc=-90.0, scale=180.0),  # -90 to +90 degrees
+    "E": uniform(loc=0.5e10, scale=2.5e10),
+    "theta_deg": uniform(loc=-90.0, scale=180.0),
 }
 
+# ---------------------- READ INPUT ----------------------
 def read_input():
     return {
+        # Material
         "nu": nu,
         "alpha": alpha,
+
+        # Geometry
         "a_fixed": a_fixed,
         "b_fixed": b_fixed,
         "c_fixed": c_fixed,
-        "h": h,
+
+        # Inclusion center
         "x0_prime": x0_prime,
         "y0_prime": y0_prime,
+        "h": h,
+
+        # Station coordinates
         "x_prime": x_prime,
         "y_prime": y_prime,
         "z": z,
+
+        # Pressure history
         "pmax": pmax,
         "tpeak": tpeak,
         "d": d,
         "time": time_vals,
+
+        # Elastic parameters
+        "E": E,
+        "theta_deg": theta_deg,
+
+        # Noise
         "sigma_noise": sigma_noise,
+
+        # Names + priors
         "station_names": station_names,
         "priors": priors,
     }
