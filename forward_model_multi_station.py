@@ -109,28 +109,40 @@ def forward_model_multi_station(
             )
         a, b, c = geometry_from_scale(s, a0, b0, c0)
 
-    # COMSOL coordinates already global → use relative to inclusion
-    x_arr = x_prime - x0_prime
-    y_arr = y_prime - y0_prime
+    # Relative to inclusion center (global COMSOL coordinates)
+    x_rel = x_prime - x0_prime
+    y_rel = y_prime - y0_prime
+
+    # Rotate relative coordinates by -theta_deg to move into inclusion frame
+    # (COMSOL tilt is clockwise; here positive theta_deg is clockwise)
+    theta = np.radians(theta_deg)
+    x_arr = x_rel * np.cos(theta) - y_rel * np.sin(theta)
+    y_arr = x_rel * np.sin(theta) + y_rel * np.cos(theta)
 
     # Pressure history
     p_series = pressure_time_series(pmax, tpeak, d, time)
 
     # Prepare strain module
     sf = multi_station_strain
-    rotate = multi_station_rotation
+    rot_mod = multi_station_rotation
 
     if sf is None or not (hasattr(sf, "linear_trans") and hasattr(sf, "charac_strain")):
         raise RuntimeError(
             "multi_station_strain must provide linear_trans and charac_strain"
         )
 
+    # Optional: expose parameters to strain module
     try:
         setattr(sf, "nu", nu)
         setattr(sf, "E", E)
         setattr(sf, "alpha", alpha)
     except Exception:
         pass
+
+    # Check for rotation function (to rotate strain tensor back to global)
+    rotate_strain_tensor = None
+    if rot_mod is not None and hasattr(rot_mod, "rotate_strain_tensor"):
+        rotate_strain_tensor = rot_mod.rotate_strain_tensor
 
     strain_data = np.zeros((Nt, Ns * 4), dtype=float)
 
@@ -144,6 +156,7 @@ def forward_model_multi_station(
         ezz_list = []
 
         for js, (xx, yy) in enumerate(zip(x_arr, y_arr)):
+            # Strain in inclusion principal frame
             S = sf.strain(
                 x=xx, y=yy, z=z[js],
                 a=a, b=b, c=c,
@@ -152,10 +165,22 @@ def forward_model_multi_station(
                 nu=nu
             )
 
-            # No rotation applied — COMSOL geometry is unrotated
-            exx, eyy, ezz = S[0, 0], S[1, 1], S[2, 2]
-            exy = S[0, 1]
-             # keep as in your original model
+            exx_i = S[0, 0]
+            eyy_i = S[1, 1]
+            ezz_i = S[2, 2]
+            exy_i = S[0, 1]
+            exz_i = 0.0
+            ezy_i = 0.0
+
+            if rotate_strain_tensor is not None:
+                # Rotate strain tensor from inclusion frame back to global frame
+                exx, eyy, exy, exz, ezy, ezz = rotate_strain_tensor(
+                    exx_i, eyy_i, exy_i, exz_i, ezy_i, ezz_i, theta_deg
+                )
+            else:
+                # Fallback: assume inclusion frame ≈ global frame
+                exx, eyy, exy, ezz = exx_i, eyy_i, exy_i, ezz_i
+
             exx_list.append(exx * 1e9)
             eyy_list.append(eyy * 1e9)
             exy_list.append(exy * 1e9)
@@ -179,7 +204,6 @@ def forward_model_multi_station(
             f"Column count mismatch: expected {len(out_cols)}, got {strain_data.shape[1]}"
         )
 
-    # Vectorized DataFrame construction (no fragmentation)
     df = pd.DataFrame(
         np.column_stack([time, strain_data]),
         columns=["time_s"] + out_cols

@@ -1,4 +1,4 @@
-# location_fit_xy.py
+# fit_xy_center_only.py
 import os
 import json
 import numpy as np
@@ -21,11 +21,9 @@ OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
 
 params = input_data.read_input()
 
-# --- DEBUG / EXPERIMENT SWITCHES --------------------------------
-EYY_FLIP = False    # set True to test flipping sign of model eYY
-Y_FLIP = False     # set True to test y_prime = -y_prime
-THETA_COMSOL = 60  # COMSOL-based tilt angle in degrees
-# ---------------------------------------------------------------
+# Optional convention checks
+Y_FLIP = False      # set True to mirror station y-coordinates
+EYY_FLIP = False    # set True to flip predicted eYY sign
 
 # ============================================================
 # Load stations
@@ -45,8 +43,8 @@ y_prime = stations_df["y_prime"].values.astype(float)
 z = stations_df["depth"].values.astype(float)
 
 if Y_FLIP:
-    print("[DEBUG] Flipping sign of y_prime for all stations")
     y_prime = -y_prime
+    print("[INFO] Y_FLIP=True: mirrored y_prime")
 
 print("[INFO] Station coordinates (x_prime, y_prime, depth):")
 for s, x, y, zz in zip(station_names, x_prime, y_prime, z):
@@ -83,7 +81,6 @@ else:
 
 obs_matrix = obs_df[obs_cols].values.astype(float)
 
-print(f"[INFO] Stations: {station_names}")
 print(f"[INFO] Observed matrix shape: {obs_matrix.shape}")
 print(f"[INFO] Using observed columns: {obs_cols[:4]} ... {obs_cols[-4:]}")
 print(f"[INFO] Observed min/max: {np.min(obs_matrix):.6g} / {np.max(obs_matrix):.6g}")
@@ -91,24 +88,24 @@ print(f"[INFO] Observed mean abs: {np.mean(np.abs(obs_matrix)):.6g}")
 print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 
 # ============================================================
-# Fixed physical values
+# Fixed physical / geometric values
 # ============================================================
 
 nu = float(params.get("nu", 0.25))
 alpha = float(params.get("alpha", 0.8))
 
+# Fix these to the current chosen model values
 pmax_fixed = 0.45e6
 tpeak_fixed = float(params.get("tpeak", 393333.0))
 d_fixed = float(params.get("d", 0.4))
-
 E_fixed = 2.0e9
 h_fixed = 518.29
-theta_fixed = 0.0 if THETA_COMSOL is None else float(THETA_COMSOL)
+theta_fixed = 75.0  # change if you want the COMSOL tilt alternative
 
 # Fixed lens geometry
-a_fixed = 150.0   # short axis / 2
-b_fixed = 290.0   # long axis / 2
-c_fixed = 2.5     # thickness / 2
+a_fixed = 150.0
+b_fixed = 290.0
+c_fixed = 2.5
 
 print("[INFO] Fixed values:")
 print(f"       pmax = {pmax_fixed:.6g}")
@@ -119,7 +116,7 @@ print(f"       h = {h_fixed:.6g}")
 print(f"       a = {a_fixed:.6g}")
 print(f"       b = {b_fixed:.6g}")
 print(f"       c = {c_fixed:.6g}")
-print(f"       theta_deg (initial) = {theta_fixed:.6g}")
+print(f"       theta_deg = {theta_fixed:.6g}")
 
 # ============================================================
 # Helpers
@@ -136,7 +133,17 @@ def best_scalar_multiplier(pred, obs):
         return np.nan
     return float(np.dot(p, o) / denom)
 
-def make_predicted_matrix(E_val, theta_val):
+def per_component_rmse(pred, obs, station_names):
+    out = {}
+    n_stat = len(station_names)
+    for ic, comp in enumerate(["eXX", "eYY", "eXY", "eZZ"]):
+        out[comp] = {}
+        for js, sname in enumerate(station_names):
+            idx = ic * n_stat + js
+            out[comp][sname] = rmse(pred[:, idx], obs[:, idx])
+    return out
+
+def make_predicted_matrix(x0_val, y0_val):
     df_pred = forward_model_multi_station(
         pmax=pmax_fixed,
         tpeak=tpeak_fixed,
@@ -144,21 +151,21 @@ def make_predicted_matrix(E_val, theta_val):
         time=time_vals,
         x_prime=x_prime,
         y_prime=y_prime,
-        x0_prime=-20.0,     # FIXED CENTER
-        y0_prime=5.0,     # FIXED CENTER
+        x0_prime=x0_val,
+        y0_prime=y0_val,
         z=z,
         a=a_fixed,
         b=b_fixed,
         c=c_fixed,
         nu=nu,
         h=h_fixed,
-        E=E_val,
-        theta_deg=theta_val,
+        E=E_fixed,
+        theta_deg=theta_fixed,
         alpha=alpha,
         station_names=station_names,
         debug=False,
     )
-    # Optional: flip sign of eYY components to test convention
+
     if EYY_FLIP:
         eyy_cols = [c for c in df_pred.columns if c.startswith("eYY_")]
         df_pred[eyy_cols] = -df_pred[eyy_cols]
@@ -169,99 +176,41 @@ def make_predicted_matrix(E_val, theta_val):
 
     return df_pred[model_cols].values.astype(float)
 
-def per_component_rmse(pred, obs, station_names):
-    """Compute RMSE per component (eXX/eYY/eXY/eZZ) and per station."""
-    n_comp = 4
-    n_stat = len(station_names)
-    out = {}
-    for ic, comp in enumerate(["eXX", "eYY", "eXY", "eZZ"]):
-        out[comp] = {}
-        for js, sname in enumerate(station_names):
-            col_idx = ic * n_stat + js
-            r = rmse(pred[:, col_idx], obs[:, col_idx])
-            out[comp][sname] = r
-    return out
-
 # ============================================================
 # Baseline diagnostic
 # ============================================================
 
-baseline_pred = make_predicted_matrix(E_fixed, theta_fixed)
-
-a_best = best_scalar_multiplier(baseline_pred, obs_matrix)
-rmse_rescaled = rmse(a_best * baseline_pred, obs_matrix)
-
-print(f"[INFO] baseline best scalar a = {a_best:.6g}")
-print(f"[INFO] baseline RMSE (after rescaling) = {rmse_rescaled:.6g}")
+x0_guess = 0.0
+y0_guess = 0.0
+baseline_pred = make_predicted_matrix(x0_guess, y0_guess)
 
 print("\n[INFO] Baseline diagnostic")
-print(f"[INFO] center fixed at (0,0)")
-print(f"[INFO] baseline pred min/max: {np.min(baseline_pred):.6g} / {np.max(baseline_pred):.6g}")
-print(f"[INFO] baseline pred mean abs: {np.mean(np.abs(baseline_pred)):.6g}")
-print(f"[INFO] baseline RMSE: {rmse(baseline_pred, obs_matrix):.6g}")
-print(f"[INFO] baseline best scalar a: {best_scalar_multiplier(baseline_pred, obs_matrix):.6g}")
+print(f"[INFO] baseline x0_prime = {x0_guess:.6g}")
+print(f"[INFO] baseline y0_prime = {y0_guess:.6g}")
+print(f"[INFO] baseline RMSE = {rmse(baseline_pred, obs_matrix):.6g}")
+print(f"[INFO] baseline best scalar = {best_scalar_multiplier(baseline_pred, obs_matrix):.6g}")
 
-# --- Per-component / per-station RMSE ------------------------
-pc_rmse = per_component_rmse(baseline_pred, obs_matrix, station_names)
-print("\n[INFO] Per-component RMSE (baseline):")
-for comp, dct in pc_rmse.items():
+pc_baseline = per_component_rmse(baseline_pred, obs_matrix, station_names)
+print("\n[INFO] Baseline per-component RMSE:")
+for comp, dct in pc_baseline.items():
     line = ", ".join(f"{s}: {v:.2f}" for s, v in dct.items())
     print(f"   {comp}: {line}")
 
-# --- Focus on eYY at S2 and S3 --------------------------------
-try:
-    idx_eYY_S2 = model_cols.index("eYY_S2")
-    idx_eYY_S3 = model_cols.index("eYY_S3")
-    print("\n[DEBUG] eYY_S2 (obs min/max): "
-          f"{obs_matrix[:, idx_eYY_S2].min():.3f} / {obs_matrix[:, idx_eYY_S2].max():.3f}")
-    print("[DEBUG] eYY_S2 (pred min/max): "
-          f"{baseline_pred[:, idx_eYY_S2].min():.3f} / {baseline_pred[:, idx_eYY_S2].max():.3f}")
-    print("[DEBUG] eYY_S3 (obs min/max): "
-          f"{obs_matrix[:, idx_eYY_S3].min():.3f} / {obs_matrix[:, idx_eYY_S3].max():.3f}")
-    print("[DEBUG] eYY_S3 (pred min/max): "
-          f"{baseline_pred[:, idx_eYY_S3].min():.3f} / {baseline_pred[:, idx_eYY_S3].max():.3f}")
-except ValueError:
-    print("[WARN] Could not find eYY_S2 or eYY_S3 in model_cols")
-
-# --- Focus on S4 all components --------------------------------
-try:
-    idx_eXX_S4 = model_cols.index("eXX_S4")
-    idx_eYY_S4 = model_cols.index("eYY_S4")
-    idx_eXY_S4 = model_cols.index("eXY_S4")
-    idx_eZZ_S4 = model_cols.index("eZZ_S4")
-
-    print("\n[DEBUG] S4 observed vs predicted ranges:")
-    for name, idx in [("eXX_S4", idx_eXX_S4),
-                      ("eYY_S4", idx_eYY_S4),
-                      ("eXY_S4", idx_eXY_S4),
-                      ("eZZ_S4", idx_eZZ_S4)]:
-        print(f"   {name} obs min/max: "
-              f"{obs_matrix[:, idx].min():.3f} / {obs_matrix[:, idx].max():.3f}")
-        print(f"   {name} pred min/max: "
-              f"{baseline_pred[:, idx].min():.3f} / {baseline_pred[:, idx].max():.3f}")
-except ValueError:
-    print("[WARN] Could not find S4 components in model_cols")
-
-
 # ============================================================
-# Optimize E and theta
+# Optimize x0 and y0 only
 # ============================================================
 
 def objective(x):
-    E_val, theta_val = x
-    pred = make_predicted_matrix(E_val, theta_val)
+    x0_val, y0_val = x
+    pred = make_predicted_matrix(x0_val, y0_val)
     return rmse(pred, obs_matrix)
 
-E_bounds = (1e9, 3e10)        # Pa
-if THETA_COMSOL is None:
-    theta_bounds = (30.0, 120.0)  # free rotation
-else:
-    # narrow bounds around COMSOL tilt, e.g. ±15°
-    theta_bounds = (THETA_COMSOL - 15.0, THETA_COMSOL + 15.0)
+# Broad bounds around the station cloud
+x_bounds = (np.min(x_prime) - 2000.0, np.max(x_prime) + 2000.0)
+y_bounds = (np.min(y_prime) - 2000.0, np.max(y_prime) + 2000.0)
+bounds = [x_bounds, y_bounds]
 
-bounds = [E_bounds, theta_bounds]
-
-print("\n[INFO] Starting differential evolution over E and theta...")
+print("\n[INFO] Starting differential evolution over x0_prime and y0_prime...")
 print(f"[INFO] bounds = {bounds}")
 
 result = differential_evolution(
@@ -275,20 +224,20 @@ result = differential_evolution(
     workers=1,
 )
 
-E_best, theta_best = result.x
+x0_best, y0_best = result.x
 best_rmse = float(result.fun)
-best_pred = make_predicted_matrix(E_best, theta_best)
+best_pred = make_predicted_matrix(x0_best, y0_best)
 best_scalar = best_scalar_multiplier(best_pred, obs_matrix)
+pc_best = per_component_rmse(best_pred, obs_matrix, station_names)
 
 print("\n[RESULT]")
-print(f"E = {E_best:.6g}")
-print(f"theta_deg = {theta_best:.6g}")
+print(f"x0_prime = {x0_best:.6g}")
+print(f"y0_prime = {y0_best:.6g}")
 print(f"RMSE = {best_rmse:.6g}")
 print(f"best scalar multiplier = {best_scalar:.6g}")
 
-pc_rmse_best = per_component_rmse(best_pred, obs_matrix, station_names)
-print("\n[INFO] Per-component RMSE (best fit):")
-for comp, dct in pc_rmse_best.items():
+print("\n[INFO] Best per-component RMSE:")
+for comp, dct in pc_best.items():
     line = ", ".join(f"{s}: {v:.2f}" for s, v in dct.items())
     print(f"   {comp}: {line}")
 
@@ -297,21 +246,24 @@ for comp, dct in pc_rmse_best.items():
 # ============================================================
 
 results = {
-    "E_best": float(E_best),
-    "theta_deg_best": float(theta_best),
+    "x0_prime_best": float(x0_best),
+    "y0_prime_best": float(y0_best),
     "rmse": float(best_rmse),
     "best_scalar": float(best_scalar),
-    "fixed_center": [0.0, 0.0],
+    "baseline": {
+        "x0_prime": float(x0_guess),
+        "y0_prime": float(y0_guess),
+    },
     "fixed_values": {
         "pmax": pmax_fixed,
         "tpeak": tpeak_fixed,
         "d": d_fixed,
-        "E_initial": E_fixed,
+        "E": E_fixed,
         "h": h_fixed,
         "a": a_fixed,
         "b": b_fixed,
         "c": c_fixed,
-        "theta_initial": theta_fixed,
+        "theta_deg": theta_fixed,
         "nu": nu,
         "alpha": alpha,
     },
@@ -320,15 +272,15 @@ results = {
         [float(bounds[1][0]), float(bounds[1][1])],
     ],
     "Y_FLIP": bool(Y_FLIP),
-    "THETA_COMSOL": None if THETA_COMSOL is None else float(THETA_COMSOL),
-    "per_component_rmse_baseline": pc_rmse,
-    "per_component_rmse_best": pc_rmse_best,
+    "EYY_FLIP": bool(EYY_FLIP),
+    "per_component_rmse_baseline": pc_baseline,
+    "per_component_rmse_best": pc_best,
 }
 
-with open("location_fit_xy_results.json", "w") as f:
+with open("fit_xy_center_results.json", "w") as f:
     json.dump(results, f, indent=2)
 
-print("[INFO] Saved location_fit_xy_results.json")
+print("[INFO] Saved fit_xy_center_results.json")
 
 # ============================================================
 # Plot best fit
@@ -345,23 +297,23 @@ for i in range(min(16, obs_matrix.shape[1])):
         ax.legend(fontsize=8)
 
 plt.tight_layout()
-plt.savefig("location_fit_xy_best_fit.png", dpi=200)
+plt.savefig("fit_xy_center_best_fit.png", dpi=200)
 plt.close()
-print("[INFO] Saved location_fit_xy_best_fit.png")
+print("[INFO] Saved fit_xy_center_best_fit.png")
 
 # ============================================================
-# Plot center (fixed)
+# Plot center result
 # ============================================================
 
 plt.figure(figsize=(6, 5))
 plt.scatter(x_prime, y_prime, label="stations")
-plt.scatter([0.0], [0.0], marker="x", s=120, label="fixed center (0,0)")
+plt.scatter([x0_best], [y0_best], marker="x", s=120, label="best center")
 plt.xlabel("x_prime")
 plt.ylabel("y_prime")
-plt.title("Inclusion center (fixed at 0,0)")
+plt.title("Best-fit inclusion center")
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig("location_fit_xy_center.png")
+plt.savefig("fit_xy_center_location.png", dpi=200)
 plt.close()
-print("[INFO] Saved location_fit_xy_center.png")
+print("[INFO] Saved fit_xy_center_location.png")
