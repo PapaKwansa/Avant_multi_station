@@ -24,7 +24,7 @@ params = input_data.read_input()
 # --- DEBUG / EXPERIMENT SWITCHES --------------------------------
 EYY_FLIP = False    # set True to test flipping sign of model eYY
 Y_FLIP = False     # set True to test y_prime = -y_prime
-THETA_COMSOL = 60  # COMSOL-based tilt angle in degrees
+THETA_COMSOL = 75  # COMSOL-based tilt angle in degrees
 # ---------------------------------------------------------------
 
 # ============================================================
@@ -144,8 +144,8 @@ def make_predicted_matrix(E_val, theta_val):
         time=time_vals,
         x_prime=x_prime,
         y_prime=y_prime,
-        x0_prime=-21.0,     # FIXED CENTER
-        y0_prime=39.0,     # FIXED CENTER
+        x0_prime=-125.0,     # FIXED CENTER
+        y0_prime=4.0,     # FIXED CENTER
         z=z,
         a=a_fixed,
         b=b_fixed,
