@@ -144,8 +144,8 @@ def make_predicted_matrix(E_val, theta_val):
         time=time_vals,
         x_prime=x_prime,
         y_prime=y_prime,
-        x0_prime=-20.0,     # FIXED CENTER
-        y0_prime=5.0,     # FIXED CENTER
+        x0_prime=-21.0,     # FIXED CENTER
+        y0_prime=39.0,     # FIXED CENTER
         z=z,
         a=a_fixed,
         b=b_fixed,
@@ -365,3 +365,58 @@ plt.tight_layout()
 plt.savefig("location_fit_xy_center.png")
 plt.close()
 print("[INFO] Saved location_fit_xy_center.png")
+
+
+# ============================================================
+# Plot lens geometry in plan view
+# ============================================================
+
+# Use best-fit center if you inverted for it; otherwise (0,0)
+x0 = 0.0
+y0 = 0.0
+
+# If you have best-fit center from another script, insert here:
+# x0 = x0_best
+# y0 = y0_best
+
+theta_rad = np.radians(theta_best)
+
+# Parametric ellipse
+t = np.linspace(0, 2*np.pi, 400)
+x_ell = a_fixed * np.cos(t)
+y_ell = b_fixed * np.sin(t)
+
+# Rotation matrix
+R = np.array([
+    [np.cos(theta_rad), -np.sin(theta_rad)],
+    [np.sin(theta_rad),  np.cos(theta_rad)]
+])
+
+xy_rot = R @ np.vstack([x_ell, y_ell])
+
+x_plot = xy_rot[0, :] + x0
+y_plot = xy_rot[1, :] + y0
+
+plt.figure(figsize=(7, 6))
+plt.plot(x_plot, y_plot, 'r-', linewidth=2, label='Lens boundary')
+
+# Plot stations
+plt.scatter(x_prime, y_prime, c='k', s=60, label='Stations')
+
+# Label stations
+for s, xs, ys in zip(station_names, x_prime, y_prime):
+    plt.text(xs + 10, ys + 10, s, fontsize=10)
+
+plt.axhline(0, color='gray', linewidth=0.5)
+plt.axvline(0, color='gray', linewidth=0.5)
+
+plt.xlabel("x' (m)")
+plt.ylabel("y' (m)")
+plt.title("Plan-view lens geometry and station layout")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig("lens_geometry_planview.png", dpi=200)
+plt.close()
+
+print("[INFO] Saved lens_geometry_planview.png")
