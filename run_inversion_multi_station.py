@@ -1,17 +1,32 @@
-# main_inversion_reparam_volume.py
+"""
+PyDREAM inversion for multi-station strain + volume.
+
+Reparameterization:
+    b = b_free
+    a = b_free * (a_fixed / b_fixed)
+    c = b_free * (c_fixed / b_fixed)
+
+This means b is the inferred length scale, and a/c follow the fixed
+shape ratios from the input file.
+
+Noise scale is kept fixed at sigma_noise from the input file.
+"""
+
 import os
 import json
-import numpy as np
-import multiprocessing
 import time as _time
-import pandas as pd
+import multiprocessing
 
+import numpy as np
+import pandas as pd
 from scipy.stats import uniform
+
 from pydream.core import run_dream
 from pydream.parameters import SampledParam
 from pydream.convergence import Gelman_Rubin
 
 from forward_model_multi_station import forward_model_multi_station
+import bayesian_inversion_multi_station as bi
 import multi_stations_input as input_data
 
 # ============================================================
@@ -24,15 +39,20 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 np.random.seed(42)
+
+# ============================================================
+# Files
+# ============================================================
 
 BASE_DIR = os.path.dirname(__file__)
 STATION_FILE = os.path.join(BASE_DIR, "AVANT_stations.csv")
 OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
-VOLUME_FILE = os.path.join(BASE_DIR, "observed_volume.csv")  # optional
+VOLUME_FILE = os.path.join(BASE_DIR, "avant_cleaned_volume.csv")
 
 # ============================================================
-# Read stations and observed strain data
+# Station metadata
 # ============================================================
 
 stations_df = pd.read_csv(STATION_FILE)
@@ -50,122 +70,113 @@ z = stations_df["depth"].values.astype(float)
 Ns = len(station_names)
 print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
 
-observed_df = pd.read_csv(OBSERVED_FILE).drop_duplicates().reset_index(drop=True)
+# ============================================================
+# Observed strain data
+# ============================================================
+
+observed_df = pd.read_csv(OBSERVED_FILE)
+observed_df.columns = [str(c).strip() for c in observed_df.columns]
+
 if "time_s" not in observed_df.columns:
     raise RuntimeError("Observed file must contain a 'time_s' column")
 
 time = observed_df["time_s"].values.astype(float)
 
+# Forward-model output order:
+#   eXX for all stations
+#   eYY for all stations
+#   eXY for all stations
+#   eZZ for all stations
 EXPECTED_COMPONENT_COLS = [
     f"{comp}_{sname}"
     for comp in ["eXX", "eYY", "eXY", "eZZ"]
     for sname in station_names
 ]
 
-non_time_cols = [c for c in observed_df.columns if c != "time_s"]
+# Keep only strain channels, excluding time and volume
+non_time_cols = [
+    c for c in observed_df.columns
+    if c not in ["time_s", "Volume"]
+]
 
 if all(col in observed_df.columns for col in EXPECTED_COMPONENT_COLS):
     observed_matrix = observed_df[EXPECTED_COMPONENT_COLS].values.astype(float)
 elif len(non_time_cols) == len(EXPECTED_COMPONENT_COLS):
+    # Use file order directly if the file contains only the 16 strain channels.
     observed_matrix = observed_df[non_time_cols].values.astype(float)
 else:
     raise RuntimeError(
-        "Observed file columns do not match the expected 16-channel layout. "
-        f"Found {len(non_time_cols)} non-time columns, expected {len(EXPECTED_COMPONENT_COLS)}."
+        "Observed file columns do not match the expected 16-channel layout.\n"
+        f"Found {len(non_time_cols)} non-time/non-volume columns, "
+        f"expected {len(EXPECTED_COMPONENT_COLS)}.\n"
+        f"Available columns: {list(observed_df.columns)}"
     )
 
 observed_vector = observed_matrix.flatten()
-print(f"[INFO] Observed matrix shape: {observed_matrix.shape}")
-print(f"[INFO] Observed min/max: {np.min(observed_matrix):.6g} / {np.max(observed_matrix):.6g}")
-print(f"[INFO] Observed mean abs: {np.mean(np.abs(observed_matrix)):.6g}")
-print(f"[INFO] Observed std: {np.std(observed_matrix):.6g}")
 
-# Optional volume observations:
-# 1) if observed_df has a Volume column, use it;
-# 2) else if observed_volume.csv exists, load it and interpolate to strain time grid;
-# 3) else disable the volume term.
-use_volume_term = False
+# Fixed strain noise scale from input file
+sigma_noise = float(params["sigma_noise"])
+
+# ============================================================
+# Volume observations
+# ============================================================
+
+VOLUME_COLUMN = "Volume"
+VOLUME_WEIGHT = 1.0
+
 volume_obs = None
+sigma_volume = None
 
-if "Volume" in observed_df.columns:
-    volume_obs = observed_df["Volume"].values.astype(float)
-    if len(volume_obs) != len(time):
-        raise RuntimeError("Volume column in observed strain file must have same length as time_s.")
-    use_volume_term = True
-    print("[INFO] Using Volume column from observed strain file.")
+if VOLUME_COLUMN in observed_df.columns:
+    volume_obs = observed_df[VOLUME_COLUMN].values.astype(float)
 elif os.path.exists(VOLUME_FILE):
-    vol_df = pd.read_csv(VOLUME_FILE).drop_duplicates().reset_index(drop=True)
-    if not {"time_s", "Volume"}.issubset(vol_df.columns):
-        raise RuntimeError("observed_volume.csv must contain columns 'time_s' and 'Volume'.")
-    vol_time = vol_df["time_s"].values.astype(float)
-    vol_vals = vol_df["Volume"].values.astype(float)
-    # interpolate onto strain time grid if needed
-    volume_obs = np.interp(time, vol_time, vol_vals)
-    use_volume_term = True
-    print(f"[INFO] Loaded volume observations from {VOLUME_FILE} and interpolated to strain time grid.")
-else:
-    print("[WARN] No observed volume data found. Volume term will be disabled.")
+    volume_df = pd.read_csv(VOLUME_FILE)
+    volume_df.columns = [str(c).strip() for c in volume_df.columns]
+
+    if VOLUME_COLUMN not in volume_df.columns:
+        raise RuntimeError(f"'{VOLUME_FILE}' exists but does not contain a '{VOLUME_COLUMN}' column.")
+
+    volume_obs = volume_df[VOLUME_COLUMN].values.astype(float)
+
+    if "time_s" in volume_df.columns:
+        vol_time = volume_df["time_s"].values.astype(float)
+        if len(vol_time) != len(time) or not np.allclose(vol_time, time):
+            raise RuntimeError("Volume time array does not match strain time array.")
+
+if volume_obs is not None:
+    sigma_volume = max(0.05 * np.std(volume_obs), 1.0)
+
+delta_P = params["pmax"] * np.sin(np.pi * time / np.max(time))
 
 # ============================================================
-# Fixed physical values and reparameterization
+# Geometry reparameterization
 # ============================================================
 
-nu = float(params.get("nu", 0.25))
-alpha = float(params.get("alpha", 0.8))
+a_fixed = float(params["a_fixed"])
+b_fixed = float(params["b_fixed"])
+c_fixed = float(params["c_fixed"])
 
-pmax_fixed = float(params.get("pmax", 2.0e6))
-tpeak_fixed = float(params.get("tpeak", 393333.0))
-d_fixed = float(params.get("d", 0.4))
+# Fixed shape ratios from the input file
+a_over_b = a_fixed / b_fixed
+c_over_b = c_fixed / b_fixed
 
-# Fixed center from the current input script
-x0_prime = float(params.get("x0_prime", -125.0))
-y0_prime = float(params.get("y0_prime", 4.0))
-
-# Fixed thickness semi-axis (c) and reference in-plane geometry
-a_ref = float(params.get("a_fixed", 150.0))
-b_ref = float(params.get("b_fixed", 290.0))
-c_fixed = float(params.get("c_fixed", 2.5))
-
-# Reparameterization:
-#   a = s * a_ref
-#   b = s * b_ref
-#   c = c_fixed
-#
-# This keeps thickness fixed while letting the in-plane scale vary.
-theta_start = float(params.get("theta_deg_start", 75.0))
-
-print("[INFO] Fixed values:")
-print(f"       pmax = {pmax_fixed:.6g}")
-print(f"       tpeak = {tpeak_fixed:.6g}")
-print(f"       d = {d_fixed:.6g}")
-print(f"       x0_prime = {x0_prime:.6g}")
-print(f"       y0_prime = {y0_prime:.6g}")
-print(f"       a_ref = {a_ref:.6g}")
-print(f"       b_ref = {b_ref:.6g}")
-print(f"       c_fixed = {c_fixed:.6g}")
-print(f"       theta_start = {theta_start:.6g}")
-print(f"       use_volume_term = {use_volume_term}")
+def reparameterize_geometry(b_free):
+    """
+    Reconstruct geometry using b as the inferred scale.
+    """
+    b_s = float(b_free)
+    a_s = b_s * a_over_b
+    c_s = b_s * c_over_b
+    return a_s, b_s, c_s
 
 # ============================================================
-# Volume forward model
+# Inclusion center
 # ============================================================
 
-def bulk_modulus(E, nu):
-    return E / (3.0 * (1.0 - 2.0 * nu))
+x0_prime = float(params["x0_prime"])
+y0_prime = float(params["y0_prime"])
 
-def volume_forward(a, b, c, E, nu, delta_P):
-    V0 = a * b * c
-    K = bulk_modulus(E, nu)
-    return V0 * (1.0 + delta_P / K)
-
-delta_P = pmax_fixed * np.sin(np.pi * time / np.max(time))
-
-if use_volume_term:
-    # 5% of the observed volume standard deviation, with a small floor
-    sigma_volume = max(0.05 * np.std(volume_obs), 1e-6)
-    print(f"[INFO] Volume sigma (fixed) = {sigma_volume:.6g}")
-else:
-    sigma_volume = None
+print(f"[INFO] Using inclusion center x0_prime={x0_prime:.3f}, y0_prime={y0_prime:.3f}")
 
 # ============================================================
 # Likelihood wrapper
@@ -173,67 +184,38 @@ else:
 
 def likelihood_wrapper(params_in):
     """
-    params_in = [s, E, theta_deg, sigma_strain]
-    Geometry is reconstructed as:
-      a = s * a_ref
-      b = s * b_ref
-      c = c_fixed
+    params_in = [b_free, E_s, theta_deg_s]
     """
-    s, E_s, theta_deg_s, sigma_strain_s = np.ravel(params_in)
+    b_free, E_s, theta_deg_s = np.ravel(params_in)
 
-    if sigma_strain_s <= 0:
+    if b_free <= 0 or E_s <= 0:
         return -np.inf
 
-    a_s = s * a_ref
-    b_s = s * b_ref
-    c_s = c_fixed
+    a_s, b_s, c_s = reparameterize_geometry(b_free)
 
     try:
-        df_pred = forward_model_multi_station(
-            pmax=pmax_fixed,
-            tpeak=tpeak_fixed,
-            d=d_fixed,
+        return bi.likelihood(
+            params=[a_s, b_s, c_s, E_s, theta_deg_s, sigma_noise],
+            observed_vector=observed_vector,
             time=time,
             x_prime=x_prime,
             y_prime=y_prime,
             x0_prime=x0_prime,
             y0_prime=y0_prime,
             z=z,
-            a=a_s,
-            b=b_s,
-            c=c_s,
-            nu=nu,
-            h=float(params.get("h", 518.29)),
-            E=E_s,
-            theta_deg=theta_deg_s,
-            alpha=alpha,
+            nu=params["nu"],
+            pmax=params["pmax"],
+            tpeak=params["tpeak"],
+            d=params["d"],
+            h=params["h"],
+            alpha=params.get("alpha", None),
+            component_cols=EXPECTED_COMPONENT_COLS,
+            volume_obs=volume_obs,
+            delta_P=delta_P,
+            sigma_volume=sigma_volume,
+            volume_weight=VOLUME_WEIGHT,
             station_names=station_names,
-            debug=False,
         )
-
-        if not all(col in df_pred.columns for col in EXPECTED_COMPONENT_COLS):
-            missing_pred = [c for c in EXPECTED_COMPONENT_COLS if c not in df_pred.columns]
-            raise ValueError(f"Forward model missing columns: {missing_pred}")
-
-        pred_vector = df_pred[EXPECTED_COMPONENT_COLS].values.astype(float).flatten()
-        residual_strain = observed_vector - pred_vector
-
-        log_like_strain = -0.5 * np.sum(
-            (residual_strain / sigma_strain_s) ** 2
-            + np.log(2.0 * np.pi * sigma_strain_s ** 2)
-        )
-
-        log_like_volume = 0.0
-        if use_volume_term:
-            volume_pred = volume_forward(a_s, b_s, c_s, E_s, nu, delta_P)
-            residual_volume = volume_obs - volume_pred
-            log_like_volume = -0.5 * np.sum(
-                (residual_volume / sigma_volume) ** 2
-                + np.log(2.0 * np.pi * sigma_volume ** 2)
-            )
-
-        return float(log_like_strain + log_like_volume)
-
     except Exception as e:
         print(f"[ERROR] Likelihood failed for params {params_in}: {e}")
         return -np.inf
@@ -243,17 +225,14 @@ def likelihood_wrapper(params_in):
 # ============================================================
 
 param_priors = [
-    # s: broad scale around the reference in-plane geometry
-    SampledParam(uniform, loc=0.1, scale=9.9),              # s in [0.1, 10.0]
+    # b: 100 to 600
+    SampledParam(uniform, loc=100.0, scale=500.0),
 
-    # Young's modulus
-    SampledParam(uniform, loc=0.5e9, scale=3.0e10),         # E in [0.5 GPa, 30.5 GPa]
+    # E: 1 GPa to 30 GPa
+    SampledParam(uniform, loc=1.0e9, scale=2.9e10),
 
-    # Orientation
-    SampledParam(uniform, loc=-90.0, scale=180.0),          # theta in [-90, 90]
-
-    # Strain noise scale
-    SampledParam(uniform, loc=1.0, scale=250.0),            # sigma_strain in [1, 251]
+    # theta: 30 to 100 degrees
+    SampledParam(uniform, loc=30.0, scale=70.0),
 ]
 
 # ============================================================
@@ -264,7 +243,7 @@ MAX_ITER = 50000
 BATCH_SIZE = 20000
 NCHAINS = 4
 R_HAT_THRESH = 1.1
-MODEL_NAME = "pydream_multi_station_reparam_strain_volume"
+MODEL_NAME = "pydream_multi_station_strain_infer_b_only"
 MP_CTX = multiprocessing.get_context("spawn")
 
 def normalize_sampled_params(sampled_params):
@@ -275,8 +254,13 @@ def normalize_sampled_params(sampled_params):
         return [arr]
     raise RuntimeError(f"Unexpected chain shape {arr.shape}")
 
+def compute_r2(obs, pred):
+    ss_res = np.sum((obs - pred) ** 2)
+    ss_tot = np.sum((obs - np.mean(obs)) ** 2)
+    return 1.0 - ss_res / ss_tot
+
 # ============================================================
-# Main PyDREAM loop
+# Main loop
 # ============================================================
 
 def main():
@@ -328,25 +312,24 @@ def main():
     np.save("multi_station_logps.npy", np.concatenate(logps_list))
     print("[INFO] Posterior samples saved.")
 
-    # ============================================================
-    # Simple post-processing
-    # ============================================================
+    # ========================================================
+    # MAP summary
+    # ========================================================
 
     samples = np.load("multi_station_sampled_params.npy")
-    logps = np.load("multi_station_logps.npy").flatten()
+    logps = np.load("multi_station_logps.npy")
+
     flat_samples = samples.reshape(-1, samples.shape[-1])
+    map_idx = np.argmax(logps)
+    map_params = flat_samples[map_idx]
 
-    map_idx = int(np.argmax(logps))
-    s_map, E_map, theta_map, sigma_strain_map = flat_samples[map_idx]
+    b_map, E_map, theta_map = map_params
+    a_map, b_map, c_map = reparameterize_geometry(b_map)
 
-    a_map = s_map * a_ref
-    b_map = s_map * b_ref
-    c_map = c_fixed
-
-    df_map = forward_model_multi_station(
-        pmax=pmax_fixed,
-        tpeak=tpeak_fixed,
-        d=d_fixed,
+    df_pred = forward_model_multi_station(
+        pmax=params["pmax"],
+        tpeak=params["tpeak"],
+        d=params["d"],
         time=time,
         x_prime=x_prime,
         y_prime=y_prime,
@@ -356,60 +339,66 @@ def main():
         a=a_map,
         b=b_map,
         c=c_map,
-        nu=nu,
-        h=float(params.get("h", 518.29)),
+        nu=params["nu"],
+        h=params["h"],
         E=E_map,
         theta_deg=theta_map,
-        alpha=alpha,
+        alpha=params.get("alpha", None),
         station_names=station_names,
-        debug=False,
     )
 
-    pred_vector = df_map[EXPECTED_COMPONENT_COLS].values.astype(float).flatten()
-    ss_res = np.sum((observed_vector - pred_vector) ** 2)
-    ss_tot = np.sum((observed_vector - np.mean(observed_vector)) ** 2)
-    r2_strain = float(1.0 - ss_res / ss_tot)
+    if not all(col in df_pred.columns for col in EXPECTED_COMPONENT_COLS):
+        missing_pred = [c for c in EXPECTED_COMPONENT_COLS if c not in df_pred.columns]
+        raise RuntimeError(f"Forward model missing columns: {missing_pred}")
 
-    r2_volume = None
-    if use_volume_term:
-        volume_map = volume_forward(a_map, b_map, c_map, E_map, nu, delta_P)
-        ss_res_v = np.sum((volume_obs - volume_map) ** 2)
-        ss_tot_v = np.sum((volume_obs - np.mean(volume_obs)) ** 2)
-        r2_volume = float(1.0 - ss_res_v / ss_tot_v)
+    pred_vector = df_pred[EXPECTED_COMPONENT_COLS].values.astype(float).flatten()
+    strain_r2 = compute_r2(observed_vector, pred_vector)
 
-    burn_in = int(0.5 * len(flat_samples))
+    volume_r2 = None
+    if volume_obs is not None:
+        V_pred_map = bi.volume_forward(a_map, b_map, c_map, E_map, params["nu"], delta_P)
+        volume_r2 = compute_r2(volume_obs, V_pred_map)
+
+    burn_frac = 0.5
+    burn_in = int(len(flat_samples) * burn_frac)
     posterior_burn_in = flat_samples[burn_in:]
 
+    b_std = float(np.std(posterior_burn_in[:, 0]))
+    E_std = float(np.std(posterior_burn_in[:, 1]))
+    theta_std = float(np.std(posterior_burn_in[:, 2]))
+
     summary = {
-        "s": {"MAP": float(s_map), "STD": float(np.std(posterior_burn_in[:, 0]))},
-        "E": {"MAP": float(E_map), "STD": float(np.std(posterior_burn_in[:, 1]))},
-        "theta": {"MAP": float(theta_map), "STD": float(np.std(posterior_burn_in[:, 2]))},
-        "sigma_strain": {"MAP": float(sigma_strain_map), "STD": float(np.std(posterior_burn_in[:, 3]))},
-        "r2_strain": r2_strain,
-        "r2_volume": r2_volume,
-        "volume_term_used": bool(use_volume_term),
-        "fixed_values": {
-            "pmax": pmax_fixed,
-            "tpeak": tpeak_fixed,
-            "d": d_fixed,
-            "x0_prime": x0_prime,
-            "y0_prime": y0_prime,
-            "a_ref": a_ref,
-            "b_ref": b_ref,
-            "c_fixed": c_fixed,
-            "h": float(params.get("h", 518.29)),
-            "nu": nu,
-            "alpha": alpha,
+        "geometry": {
+            "a_fixed": float(a_fixed),
+            "b_fixed": float(b_fixed),
+            "c_fixed": float(c_fixed),
+            "MAP": {
+                "b": float(b_map),
+                "a": float(a_map),
+                "c": float(c_map),
+            },
+            "STD": {
+                "b": b_std,
+            },
         },
+        "E": {"MAP": float(E_map), "STD": E_std},
+        "theta_deg": {"MAP": float(theta_map), "STD": theta_std},
+        "sigma_noise_fixed": float(sigma_noise),
+        "strain_R2": float(strain_r2),
+        "volume_R2": None if volume_r2 is None else float(volume_r2),
+        "volume_weight": float(VOLUME_WEIGHT),
     }
 
-    with open("posterior_summary_reparam_volume.json", "w") as f:
+    with open("posterior_summary.json", "w") as f:
         json.dump(summary, f, indent=4)
 
-    print("[INFO] Saved posterior_summary_reparam_volume.json")
-    print(f"[INFO] Strain R2 = {r2_strain:.6g}")
-    if r2_volume is not None:
-        print(f"[INFO] Volume R2 = {r2_volume:.6g}")
+    print("[INFO] Saved posterior_summary.json")
+    print(f"[INFO] MAP geometry: a={a_map:.3f}, b={b_map:.3f}, c={c_map:.3f}")
+    print(f"[INFO] MAP E: {E_map:.6e}")
+    print(f"[INFO] MAP theta_deg: {theta_map:.3f}")
+    print(f"[INFO] Strain R^2: {strain_r2:.4f}")
+    if volume_r2 is not None:
+        print(f"[INFO] Volume R^2: {volume_r2:.4f}")
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
