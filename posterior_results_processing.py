@@ -230,6 +230,9 @@ def plot_posterior_histograms(posterior_flat, logps):
     names = ["E", "theta"]
     titles = ["Young's Modulus (E)", "Orientation (Theta)"]
 
+    # We will keep references to the last set of handles for the legend
+    mean_line = median_line = map_line = prior_patch = None
+
     for i, ax in enumerate(axes):
         name = names[i]
         title = titles[i]
@@ -238,7 +241,7 @@ def plot_posterior_histograms(posterior_flat, logps):
         mean_val = float(np.mean(data))
         median_val = float(np.median(data))
 
-        # Histogram
+        # Histogram (posterior density)
         n, bins, patches = ax.hist(
             data,
             bins=40,
@@ -260,6 +263,7 @@ def plot_posterior_histograms(posterior_flat, logps):
         map_line = ax.axvline(map_params[i], color="purple", linestyle=":", linewidth=3.5, label="MAP")
 
         ax.set_title(title)
+        ax.set_ylabel("Posterior density")
         ax.grid(True, alpha=0.3)
 
     # Build a clean legend under the figure
