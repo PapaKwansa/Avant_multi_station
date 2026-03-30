@@ -1,15 +1,14 @@
 """
 PyDREAM inversion for multi-station strain + volume.
 
-Reparameterization:
-    b = b_free
-    a = b_free * (a_fixed / b_fixed)
-    c = b_free * (c_fixed / b_fixed)
+Geometry:
+    a = a_fixed
+    b = b_fixed
+    c = c_fixed
 
-This means b is the inferred length scale, and a/c follow the fixed
-shape ratios from the input file.
+Only E and theta are inferred.
 
-Noise scale is kept fixed at sigma_noise from the input file.
+Noise scale is kept fixed from the observed data.
 
 IMPORTANT:
 The observed strain vector is built in the same component-major order
@@ -75,33 +74,25 @@ Ns = len(station_names)
 print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
 
 # ============================================================
-# Geometry / forward-model naming detection
+# Geometry (fixed)
 # ============================================================
 
 a_fixed = float(params["a_fixed"])
 b_fixed = float(params["b_fixed"])
 c_fixed = float(params["c_fixed"])
 
-a_over_b = a_fixed / b_fixed
-c_over_b = c_fixed / b_fixed
+print(f"[INFO] Using FIXED geometry: a={a_fixed}, b={b_fixed}, c={c_fixed}")
 
-def reparameterize_geometry(b_free):
-    """
-    Reconstruct geometry using b as the inferred scale.
-    """
-    b_s = float(b_free)
-    a_s = b_s * a_over_b
-    c_s = b_s * c_over_b
-    return a_s, b_s, c_s
+# ============================================================
+# Forward-model column detection
+# ============================================================
 
 def detect_component_columns():
     """
     Detect whether the forward model returns new-style names:
-        eXX_FS01, eYY_FS01, ...
+        eXX_S1, eYY_S1, ...
     or legacy names:
-        Epsilon_XX_nanostrain_FS01, ...
-
-    The detected ordering becomes the canonical ordering for the inversion.
+        Epsilon_XX_nanostrain_S1, ...
     """
     new_cols = [f"{comp}_{sname}" for comp in ["eXX", "eYY", "eXY", "eZZ"] for sname in station_names]
     legacy_cols = [
@@ -115,7 +106,6 @@ def detect_component_columns():
         for sname in station_names
     ]
 
-    # Probe the forward model once with nominal values from the input file.
     try:
         test_df = forward_model_multi_station(
             pmax=params["pmax"],
@@ -139,7 +129,6 @@ def detect_component_columns():
         )
     except Exception as e:
         print(f"[WARN] Could not probe forward-model column names: {e}")
-        # Default to new-style names if probing fails.
         return new_cols
 
     if all(c in test_df.columns for c in new_cols):
@@ -173,11 +162,6 @@ def standardize_observed_strain(df, component_cols):
     """
     Return a dataframe whose strain columns are in the exact order used by
     the forward model / likelihood.
-
-    Supports:
-      - exact component_cols
-      - opposite naming convention (new vs legacy)
-      - generic 16-channel files (columns in file order)
     """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -191,7 +175,6 @@ def standardize_observed_strain(df, component_cols):
     # Case 2: rename from the alternate convention
     rename_map = {}
     if component_cols[0].startswith("e"):
-        # Detected new-style columns; try legacy-to-new renaming
         legacy_bases = {
             "eXX": "Epsilon_XX_nanostrain",
             "eYY": "Epsilon_YY_nanostrain",
@@ -205,7 +188,6 @@ def standardize_observed_strain(df, component_cols):
                 if old in df.columns and new not in df.columns:
                     rename_map[old] = new
     else:
-        # Detected legacy-style columns; try new-to-legacy renaming
         new_bases = {
             "Epsilon_XX_nanostrain": "eXX",
             "Epsilon_YY_nanostrain": "eYY",
@@ -243,7 +225,6 @@ def flatten_columns(df, cols):
 
 observed_vector = flatten_columns(observed_df, COMPONENT_COLS)
 
-# Fixed strain noise scale from input file
 sigma_noise = 0.2 * np.std(observed_vector)
 print(f"[INFO] Observed vector shape: {observed_vector.shape}")
 print(f"[INFO] Estimated noise scale: {sigma_noise:.3f}")
@@ -289,23 +270,21 @@ y0_prime = float(params["y0_prime"])
 print(f"[INFO] Using inclusion center x0_prime={x0_prime:.3f}, y0_prime={y0_prime:.3f}")
 
 # ============================================================
-# Likelihood wrapper
+# Likelihood wrapper (E, theta only)
 # ============================================================
 
 def likelihood_wrapper(params_in):
     """
-    params_in = [b_free, E_s, theta_deg_s]
+    params_in = [E_s, theta_deg_s]
     """
-    b_free, E_s, theta_deg_s = np.ravel(params_in)
+    E_s, theta_deg_s = np.ravel(params_in)
 
-    if b_free <= 0 or E_s <= 0:
+    if E_s <= 0:
         return -np.inf
-
-    a_s, b_s, c_s = reparameterize_geometry(b_free)
 
     try:
         return bi.likelihood(
-            params=[a_s, b_s, c_s, E_s, theta_deg_s, sigma_noise],
+            params=[a_fixed, b_fixed, c_fixed, E_s, theta_deg_s, sigma_noise],
             observed_vector=observed_vector,
             time=time,
             x_prime=x_prime,
@@ -331,18 +310,15 @@ def likelihood_wrapper(params_in):
         return -np.inf
 
 # ============================================================
-# Priors
+# Priors (E, theta)
 # ============================================================
 
 param_priors = [
-    # b: 100 to 600
-    SampledParam(uniform, loc=100.0, scale=500.0),
-
     # E: 1 GPa to 30 GPa
-    SampledParam(uniform, loc=0.5e9, scale=2.9e10),
+    SampledParam(uniform, loc=1.0e9, scale=2.9e10),
 
-    # theta: 30 to 100 degrees
-    SampledParam(uniform, loc=30.0, scale=70.0),
+    # theta: -90 to 90 degrees
+    SampledParam(uniform, loc=-90.0, scale=180.0),
 ]
 
 # ============================================================
@@ -353,7 +329,7 @@ MAX_ITER = 50000
 BATCH_SIZE = 5000
 NCHAINS = 4
 R_HAT_THRESH = 1.1
-MODEL_NAME = "pydream_multi_station_strain_infer_b_only"
+MODEL_NAME = "pydream_multi_station_strain_E_theta"
 MP_CTX = multiprocessing.get_context("spawn")
 
 def normalize_sampled_params(sampled_params):
@@ -433,8 +409,7 @@ def main():
     map_idx = int(np.argmax(logps))
     map_params = flat_samples[map_idx]
 
-    b_scale_map, E_map, theta_map = map_params
-    a_map, b_map, c_map = reparameterize_geometry(b_scale_map)
+    E_map, theta_map = map_params
 
     df_pred = forward_model_multi_station(
         pmax=params["pmax"],
@@ -446,9 +421,9 @@ def main():
         x0_prime=x0_prime,
         y0_prime=y0_prime,
         z=z,
-        a=a_map,
-        b=b_map,
-        c=c_map,
+        a=a_fixed,
+        b=b_fixed,
+        c=c_fixed,
         nu=params["nu"],
         h=params["h"],
         E=E_map,
@@ -466,31 +441,21 @@ def main():
 
     volume_r2 = None
     if volume_obs is not None:
-        V_pred_map = bi.volume_forward(a_map, b_map, c_map, E_map, params["nu"], delta_P)
+        V_pred_map = bi.volume_forward(a_fixed, b_fixed, c_fixed, E_map, params["nu"], delta_P)
         volume_r2 = compute_r2(volume_obs, V_pred_map)
 
     burn_frac = 0.5
     burn_in = int(len(flat_samples) * burn_frac)
     posterior_burn_in = flat_samples[burn_in:]
 
-    b_std = float(np.std(posterior_burn_in[:, 0]))
-    E_std = float(np.std(posterior_burn_in[:, 1]))
-    theta_std = float(np.std(posterior_burn_in[:, 2]))
+    E_std = float(np.std(posterior_burn_in[:, 0]))
+    theta_std = float(np.std(posterior_burn_in[:, 1]))
 
     summary = {
         "geometry": {
             "a_fixed": float(a_fixed),
             "b_fixed": float(b_fixed),
             "c_fixed": float(c_fixed),
-            "MAP": {
-                "b_scale": float(b_scale_map),
-                "a": float(a_map),
-                "b": float(b_map),
-                "c": float(c_map),
-            },
-            "STD": {
-                "b_scale": b_std,
-            },
         },
         "E": {"MAP": float(E_map), "STD": E_std},
         "theta_deg": {"MAP": float(theta_map), "STD": theta_std},
@@ -499,9 +464,8 @@ def main():
         "volume_R2": None if volume_r2 is None else float(volume_r2),
         "volume_weight": float(VOLUME_WEIGHT),
         "priors": {
-            "b_scale": [100.0, 600.0],
-            "E": [1.0e9, 3.0e10],
-            "theta_deg": [30.0, 100.0],
+            "E": [1.0e9, 3.0e10],       # 1–30 GPa
+            "theta_deg": [-90.0, 90.0], # -90–90 degrees
         },
     }
 
@@ -509,7 +473,6 @@ def main():
         json.dump(summary, f, indent=4)
 
     print("[INFO] Saved posterior_summary.json")
-    print(f"[INFO] MAP geometry: a={a_map:.3f}, b={b_map:.3f}, c={c_map:.3f}")
     print(f"[INFO] MAP E: {E_map:.6e}")
     print(f"[INFO] MAP theta_deg: {theta_map:.3f}")
     print(f"[INFO] Strain R^2: {strain_r2:.4f}")
