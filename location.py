@@ -346,20 +346,61 @@ print("[INFO] Saved location_fit_xy_results.json")
 # Plot best fit
 # ============================================================
 
-plt.figure(figsize=(16, 12))
-for i in range(min(16, obs_matrix.shape[1])):
-    ax = plt.subplot(4, 4, i + 1)
-    ax.plot(time_vals, obs_matrix[:, i], "k.", markersize=2, label="obs")
-    ax.plot(time_vals, best_pred[:, i], "r-", linewidth=1.2, label="pred")
-    ax.set_title(model_cols[i], fontsize=9)
-    ax.grid(True, alpha=0.25)
-    if i == 0:
-        ax.legend(fontsize=8)
+# ============================================================
+# High‑quality best‑fit plot (replaces old block)
+# ============================================================
 
-plt.tight_layout()
-plt.savefig("location_fit_xy_best_fit.png", dpi=200)
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.labelsize": 14,
+    "axes.titlesize": 14,
+    "axes.linewidth": 1.8,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "figure.dpi": 200,
+})
+
+fig, axes = plt.subplots(4, 4, figsize=(18, 14), constrained_layout=True)
+
+for i in range(16):
+    ax = axes.flat[i]
+
+    # Observed vs predicted
+    ax.plot(
+        time_vals,
+        obs_matrix[:, i],
+        "k.",
+        markersize=3,
+        label="Observed" if i == 0 else None,
+    )
+    ax.plot(
+        time_vals,
+        best_pred[:, i],
+        color="tab:red",
+        linewidth=2.2,
+        label="Predicted" if i == 0 else None,
+    )
+
+    ax.set_title(model_cols[i], fontsize=12, pad=6)
+    ax.grid(True, alpha=0.25)
+
+# One shared legend
+handles, labels = axes.flat[0].get_legend_handles_labels()
+fig.legend(
+    handles,
+    labels,
+    loc="lower center",
+    ncol=2,
+    frameon=False,
+    fontsize=14,
+    bbox_to_anchor=(0.5, -0.02),
+)
+
+plt.savefig("location_fit_xy_best_fit.png", dpi=350, bbox_inches="tight")
 plt.close()
-print("[INFO] Saved location_fit_xy_best_fit.png")
+print("[INFO] Saved high‑quality location_fit_xy_best_fit.png")
+
 
 # ============================================================
 # Plot center (fixed)
