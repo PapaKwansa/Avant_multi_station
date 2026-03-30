@@ -10,6 +10,10 @@ This means b is the inferred length scale, and a/c follow the fixed
 shape ratios from the input file.
 
 Noise scale is kept fixed at sigma_noise from the input file.
+
+IMPORTANT:
+The observed strain vector is built in the same component-major order
+as the forward-model prediction to avoid misaligned likelihood terms.
 """
 
 import os
@@ -71,6 +75,89 @@ Ns = len(station_names)
 print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
 
 # ============================================================
+# Geometry / forward-model naming detection
+# ============================================================
+
+a_fixed = float(params["a_fixed"])
+b_fixed = float(params["b_fixed"])
+c_fixed = float(params["c_fixed"])
+
+a_over_b = a_fixed / b_fixed
+c_over_b = c_fixed / b_fixed
+
+def reparameterize_geometry(b_free):
+    """
+    Reconstruct geometry using b as the inferred scale.
+    """
+    b_s = float(b_free)
+    a_s = b_s * a_over_b
+    c_s = b_s * c_over_b
+    return a_s, b_s, c_s
+
+def detect_component_columns():
+    """
+    Detect whether the forward model returns new-style names:
+        eXX_FS01, eYY_FS01, ...
+    or legacy names:
+        Epsilon_XX_nanostrain_FS01, ...
+
+    The detected ordering becomes the canonical ordering for the inversion.
+    """
+    new_cols = [f"{comp}_{sname}" for comp in ["eXX", "eYY", "eXY", "eZZ"] for sname in station_names]
+    legacy_cols = [
+        f"{comp}_{sname}"
+        for comp in [
+            "Epsilon_XX_nanostrain",
+            "Epsilon_YY_nanostrain",
+            "Epsilon_XY_nanostrain",
+            "Epsilon_ZZ_nanostrain",
+        ]
+        for sname in station_names
+    ]
+
+    # Probe the forward model once with nominal values from the input file.
+    try:
+        test_df = forward_model_multi_station(
+            pmax=params["pmax"],
+            tpeak=params["tpeak"],
+            d=params["d"],
+            time=np.asarray(params["time"], dtype=float),
+            x_prime=x_prime,
+            y_prime=y_prime,
+            x0_prime=float(params["x0_prime"]),
+            y0_prime=float(params["y0_prime"]),
+            z=z,
+            a=a_fixed,
+            b=b_fixed,
+            c=c_fixed,
+            nu=params["nu"],
+            h=float(params["h"]),
+            E=float(params["E"]),
+            theta_deg=float(params["theta_deg"]),
+            alpha=params.get("alpha", None),
+            station_names=station_names,
+        )
+    except Exception as e:
+        print(f"[WARN] Could not probe forward-model column names: {e}")
+        # Default to new-style names if probing fails.
+        return new_cols
+
+    if all(c in test_df.columns for c in new_cols):
+        return new_cols
+    if all(c in test_df.columns for c in legacy_cols):
+        return legacy_cols
+
+    raise RuntimeError(
+        "Could not detect a valid forward-model strain column convention.\n"
+        f"New-style example columns: {new_cols[:4]}\n"
+        f"Legacy-style example columns: {legacy_cols[:4]}\n"
+        f"Available forward-model columns: {list(test_df.columns)}"
+    )
+
+COMPONENT_COLS = detect_component_columns()
+print(f"[INFO] Using strain column convention: {COMPONENT_COLS[0].split('_')[0]} ...")
+
+# ============================================================
 # Observed strain data
 # ============================================================
 
@@ -82,40 +169,84 @@ if "time_s" not in observed_df.columns:
 
 time = observed_df["time_s"].values.astype(float)
 
-# Forward-model output order:
-#   eXX for all stations
-#   eYY for all stations
-#   eXY for all stations
-#   eZZ for all stations
-EXPECTED_COMPONENT_COLS = [
-    f"{comp}_{sname}"
-    for comp in ["eXX", "eYY", "eXY", "eZZ"]
-    for sname in station_names
-]
+def standardize_observed_strain(df, component_cols):
+    """
+    Return a dataframe whose strain columns are in the exact order used by
+    the forward model / likelihood.
 
-# Keep only strain channels, excluding time and volume
-non_time_cols = [
-    c for c in observed_df.columns
-    if c not in ["time_s", "Volume"]
-]
+    Supports:
+      - exact component_cols
+      - opposite naming convention (new vs legacy)
+      - generic 16-channel files (columns in file order)
+    """
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
 
-if all(col in observed_df.columns for col in EXPECTED_COMPONENT_COLS):
-    observed_matrix = observed_df[EXPECTED_COMPONENT_COLS].values.astype(float)
-elif len(non_time_cols) == len(EXPECTED_COMPONENT_COLS):
-    # Use file order directly if the file contains only the 16 strain channels.
-    observed_matrix = observed_df[non_time_cols].values.astype(float)
-else:
+    strain_cols = [c for c in df.columns if c not in ["time_s", "Volume"]]
+
+    # Case 1: already in the exact detected convention
+    if all(c in df.columns for c in component_cols):
+        return df, component_cols
+
+    # Case 2: rename from the alternate convention
+    rename_map = {}
+    if component_cols[0].startswith("e"):
+        # Detected new-style columns; try legacy-to-new renaming
+        legacy_bases = {
+            "eXX": "Epsilon_XX_nanostrain",
+            "eYY": "Epsilon_YY_nanostrain",
+            "eXY": "Epsilon_XY_nanostrain",
+            "eZZ": "Epsilon_ZZ_nanostrain",
+        }
+        for comp in ["eXX", "eYY", "eXY", "eZZ"]:
+            for sname in station_names:
+                old = f"{legacy_bases[comp]}_{sname}"
+                new = f"{comp}_{sname}"
+                if old in df.columns and new not in df.columns:
+                    rename_map[old] = new
+    else:
+        # Detected legacy-style columns; try new-to-legacy renaming
+        new_bases = {
+            "Epsilon_XX_nanostrain": "eXX",
+            "Epsilon_YY_nanostrain": "eYY",
+            "Epsilon_XY_nanostrain": "eXY",
+            "Epsilon_ZZ_nanostrain": "eZZ",
+        }
+        for legacy_base, comp in new_bases.items():
+            for sname in station_names:
+                old = f"{comp}_{sname}"
+                new = f"{legacy_base}_{sname}"
+                if old in df.columns and new not in df.columns:
+                    rename_map[old] = new
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+        if all(c in df.columns for c in component_cols):
+            return df, component_cols
+
+    # Case 3: generic 16-channel file in file order
+    if len(strain_cols) == len(component_cols):
+        rename_map = {old: new for old, new in zip(strain_cols, component_cols)}
+        df = df.rename(columns=rename_map)
+        return df, component_cols
+
     raise RuntimeError(
-        "Observed file columns do not match the expected 16-channel layout.\n"
-        f"Found {len(non_time_cols)} non-time/non-volume columns, "
-        f"expected {len(EXPECTED_COMPONENT_COLS)}.\n"
-        f"Available columns: {list(observed_df.columns)}"
+        "Observed file columns do not match the expected strain layout.\n"
+        f"Expected {len(component_cols)} strain columns.\n"
+        f"Available columns: {list(df.columns)}"
     )
 
-observed_vector = observed_matrix.flatten()
+observed_df, COMPONENT_COLS = standardize_observed_strain(observed_df, COMPONENT_COLS)
+
+def flatten_columns(df, cols):
+    return np.concatenate([df[c].values.astype(float) for c in cols])
+
+observed_vector = flatten_columns(observed_df, COMPONENT_COLS)
 
 # Fixed strain noise scale from input file
-sigma_noise = float(params["sigma_noise"])
+sigma_noise = 0.2 * np.std(observed_vector)
+print(f"[INFO] Observed vector shape: {observed_vector.shape}")
+print(f"[INFO] Estimated noise scale: {sigma_noise:.3f}")
 
 # ============================================================
 # Volume observations
@@ -147,27 +278,6 @@ if volume_obs is not None:
     sigma_volume = max(0.05 * np.std(volume_obs), 1.0)
 
 delta_P = params["pmax"] * np.sin(np.pi * time / np.max(time))
-
-# ============================================================
-# Geometry reparameterization
-# ============================================================
-
-a_fixed = float(params["a_fixed"])
-b_fixed = float(params["b_fixed"])
-c_fixed = float(params["c_fixed"])
-
-# Fixed shape ratios from the input file
-a_over_b = a_fixed / b_fixed
-c_over_b = c_fixed / b_fixed
-
-def reparameterize_geometry(b_free):
-    """
-    Reconstruct geometry using b as the inferred scale.
-    """
-    b_s = float(b_free)
-    a_s = b_s * a_over_b
-    c_s = b_s * c_over_b
-    return a_s, b_s, c_s
 
 # ============================================================
 # Inclusion center
@@ -209,7 +319,7 @@ def likelihood_wrapper(params_in):
             d=params["d"],
             h=params["h"],
             alpha=params.get("alpha", None),
-            component_cols=EXPECTED_COMPONENT_COLS,
+            component_cols=COMPONENT_COLS,
             volume_obs=volume_obs,
             delta_P=delta_P,
             sigma_volume=sigma_volume,
@@ -229,7 +339,7 @@ param_priors = [
     SampledParam(uniform, loc=100.0, scale=500.0),
 
     # E: 1 GPa to 30 GPa
-    SampledParam(uniform, loc=1.0e9, scale=2.9e10),
+    SampledParam(uniform, loc=0.5e9, scale=2.9e10),
 
     # theta: 30 to 100 degrees
     SampledParam(uniform, loc=30.0, scale=70.0),
@@ -240,7 +350,7 @@ param_priors = [
 # ============================================================
 
 MAX_ITER = 50000
-BATCH_SIZE = 20000
+BATCH_SIZE = 5000
 NCHAINS = 4
 R_HAT_THRESH = 1.1
 MODEL_NAME = "pydream_multi_station_strain_infer_b_only"
@@ -320,11 +430,11 @@ def main():
     logps = np.load("multi_station_logps.npy")
 
     flat_samples = samples.reshape(-1, samples.shape[-1])
-    map_idx = np.argmax(logps)
+    map_idx = int(np.argmax(logps))
     map_params = flat_samples[map_idx]
 
-    b_map, E_map, theta_map = map_params
-    a_map, b_map, c_map = reparameterize_geometry(b_map)
+    b_scale_map, E_map, theta_map = map_params
+    a_map, b_map, c_map = reparameterize_geometry(b_scale_map)
 
     df_pred = forward_model_multi_station(
         pmax=params["pmax"],
@@ -347,11 +457,11 @@ def main():
         station_names=station_names,
     )
 
-    if not all(col in df_pred.columns for col in EXPECTED_COMPONENT_COLS):
-        missing_pred = [c for c in EXPECTED_COMPONENT_COLS if c not in df_pred.columns]
+    if not all(col in df_pred.columns for col in COMPONENT_COLS):
+        missing_pred = [c for c in COMPONENT_COLS if c not in df_pred.columns]
         raise RuntimeError(f"Forward model missing columns: {missing_pred}")
 
-    pred_vector = df_pred[EXPECTED_COMPONENT_COLS].values.astype(float).flatten()
+    pred_vector = flatten_columns(df_pred, COMPONENT_COLS)
     strain_r2 = compute_r2(observed_vector, pred_vector)
 
     volume_r2 = None
@@ -373,12 +483,13 @@ def main():
             "b_fixed": float(b_fixed),
             "c_fixed": float(c_fixed),
             "MAP": {
-                "b": float(b_map),
+                "b_scale": float(b_scale_map),
                 "a": float(a_map),
+                "b": float(b_map),
                 "c": float(c_map),
             },
             "STD": {
-                "b": b_std,
+                "b_scale": b_std,
             },
         },
         "E": {"MAP": float(E_map), "STD": E_std},
@@ -387,6 +498,11 @@ def main():
         "strain_R2": float(strain_r2),
         "volume_R2": None if volume_r2 is None else float(volume_r2),
         "volume_weight": float(VOLUME_WEIGHT),
+        "priors": {
+            "b_scale": [100.0, 600.0],
+            "E": [1.0e9, 3.0e10],
+            "theta_deg": [30.0, 100.0],
+        },
     }
 
     with open("posterior_summary.json", "w") as f:
