@@ -91,56 +91,59 @@ eZZ = reshape_component("eZZ")
 # ------------------------------------------------------------
 # PLOTTING
 # ------------------------------------------------------------
-# ------------------------------------------------------------
-# HIGH‑QUALITY PLOTTING (presentation ready)
-# ------------------------------------------------------------
+fig, axes = plt.subplots(2, 2, figsize=(18, 15))
+fig.subplots_adjust(top=0.90, hspace=0.35) 
 
-plt.rcParams.update({
-    "font.size": 18,
-    "axes.labelsize": 18,
-    "axes.titlesize": 20,
-    "axes.linewidth": 2.2,
-    "xtick.labelsize": 16,
-    "ytick.labelsize": 16,
-    "figure.dpi": 200,
-})
+# 👇 move ALL subplots downward
+fig.subplots_adjust(top=0.90)
 
-fig, axes = plt.subplots(2, 2, figsize=(18, 16), constrained_layout=True)
+# 👇 place title safely above
+fig.suptitle(
+    f"Plan-view strain tensor components at depth {user_depth:.1f} m",
+    fontsize=20,
+    fontweight="bold"
+)
 
 fields = [eXX, eYY, eXY, eZZ]
 titles = [
-    rf"$\varepsilon_{{xx}}$ at depth {user_depth} m",
-    rf"$\varepsilon_{{yy}}$ at depth {user_depth} m",
-    rf"$\varepsilon_{{xy}}$ at depth {user_depth} m",
-    rf"$\varepsilon_{{zz}}$ at depth {user_depth} m",
+    rf"$\varepsilon_{{xx}}$ ",
+    rf"$\varepsilon_{{yy}}$ ",
+    rf"$\varepsilon_{{xy}}$ ",
+    rf"$\varepsilon_{{zz}}$ ",
 ]
 
 for ax, data, title in zip(axes.flat, fields, titles):
 
-    # High‑resolution contour
-    cont = ax.contourf(
-        X, Y, data,
-        cmap="coolwarm",
-        levels=200,
-        antialiased=True
-    )
+    # symmetric color scale for better visual comparison
+    vmax = np.nanmax(np.abs(data))
+    levels = np.linspace(-vmax, vmax, 40)
 
-    # Clean colorbar
-    cbar = plt.colorbar(cont, ax=ax, shrink=0.85, pad=0.02)
-    cbar.set_label("Strain (nanostrain)", fontsize=18)
-    cbar.ax.tick_params(labelsize=14)
+    cont = ax.contourf(X, Y, data, levels=levels, cmap="RdBu_r", extend="both")
 
-    # Titles and labels
-    ax.set_title(title, pad=12, fontweight="bold")
-    ax.set_xlabel("x (m)", fontweight="bold")
-    ax.set_ylabel("y (m)", fontweight="bold")
+    # colorbar
+    cbar = plt.colorbar(cont, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Nanostrain", fontsize=15, fontweight="bold")
+    cbar.ax.tick_params(labelsize=13)
 
-    # Equal aspect ratio for physical correctness
+    # titles and labels
+    ax.set_title(title, fontsize=17, fontweight="bold", pad=12)
+    ax.set_xlabel("x (m)", fontsize=15, fontweight="bold")
+    ax.set_ylabel("y (m)", fontsize=15, fontweight="bold")
+
+    # axes styling
     ax.set_aspect("equal")
+    ax.tick_params(axis="both", which="both", labelsize=13, width=1.5, length=5)
+    ax.grid(True, alpha=0.25, linewidth=0.8)
 
-    # Subtle grid
-    ax.grid(True, alpha=0.25, linewidth=1.0)
+# global title
+fig.suptitle(
+    f"Plan-view strain fields at depth {user_depth:.1f} m",
+    fontsize=20,
+    fontweight="bold",
+    y=0.98
+)
 
-# Save high‑quality figure
-plt.savefig("plan_view_strain_fields.png", dpi=350, bbox_inches="tight")
+# save high-quality figure
+plt.savefig("strain_plan_view.png", dpi=300)
+
 plt.show()

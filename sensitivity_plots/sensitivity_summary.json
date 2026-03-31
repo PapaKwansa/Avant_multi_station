@@ -1,0 +1,44 @@
+{
+  "baseline_strain_rmse": 49.20049579884035,
+  "baseline_volume_rmse": null,
+  "station_names": [
+    "S1",
+    "S2",
+    "S3",
+    "S4"
+  ],
+  "fixed_values": {
+    "nu": 0.25,
+    "alpha": 0.8,
+    "a": 150.0,
+    "b": 290.0,
+    "c": 2.5,
+    "x0_prime": -125.0,
+    "y0_prime": 4.0,
+    "h": 518.29,
+    "pmax": 800000.0,
+    "tpeak": 393333.0,
+    "d": 0.4,
+    "E": 2000000000.0,
+    "theta_deg": 15.0
+  },
+  "heatmaps_enabled": true,
+  "volume_used": false,
+  "global_best_rmse": 49.20049579884035,
+  "global_best_params": {
+    "nu": 0.25,
+    "alpha": 0.8,
+    "a_fixed": 150.0,
+    "b_fixed": 290.0,
+    "c_fixed": 2.5,
+    "x0_prime": -125.0,
+    "y0_prime": 4.0,
+    "h": 518.29,
+    "pmax": 800000.0,
+    "tpeak": 393333.0,
+    "d": 0.4,
+    "E": 2000000000.0,
+    "theta_deg": 15.0
+  },
+  "sobol_enabled": false
+}

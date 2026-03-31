@@ -15,7 +15,7 @@ c_fixed = 2.5  #thickness / 2
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
 E = 0.2e10 # Change this Elastic Modulus to 40 GPa to match COMSOL
-theta_deg = 75   # COMSOL uses no rotation
+theta_deg = 15   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = -125.0
@@ -30,7 +30,7 @@ y_prime = stations_df["y_prime"].values.astype(float)
 z = stations_df["depth"].values.astype(float)
 
 # ---------------------- PRESSURE HISTORY ----------------------
-pmax = 2.0e6
+pmax = 0.8e6 # Peak pressure (Pa) keep the pressure fix
 tpeak = 393333.0
 d = 0.4
 

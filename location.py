@@ -24,7 +24,7 @@ params = input_data.read_input()
 # --- DEBUG / EXPERIMENT SWITCHES --------------------------------
 EYY_FLIP = False    # set True to test flipping sign of model eYY
 Y_FLIP = False     # set True to test y_prime = -y_prime
-THETA_COMSOL = 75  # COMSOL-based tilt angle in degrees
+THETA_COMSOL = 15  # COMSOL-based tilt angle in degrees
 # ---------------------------------------------------------------
 
 # ============================================================
@@ -113,8 +113,8 @@ h_fixed = 518.29
 theta_fixed = 0.0 if THETA_COMSOL is None else float(THETA_COMSOL)
 
 # Fixed lens geometry
-a_fixed = 150.0   # short axis / 2
-b_fixed = 290.0   # long axis / 2
+a_fixed = 60.0   # short axis / 2
+b_fixed = 114.0   # long axis / 2
 c_fixed = 2.5     # thickness / 2
 
 print("[INFO] Fixed values:")
