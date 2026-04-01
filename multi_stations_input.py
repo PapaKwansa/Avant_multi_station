@@ -8,19 +8,19 @@ nu = 0.25
 alpha = 0.8
 
 # ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
-a_fixed = 136   # short axis / 2
-b_fixed = 69.0   # long axis / 2, changed from 290 to 200
+a_fixed = 136.229   # short axis / 2
+b_fixed = 68.5495   # long axis / 2, changed from 290 to 200 (a=136.229, b=68.5495, c=20)
 c_fixed = 20  #thickness / 2
 
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
 E = 0.2e10 # Change this Elastic Modulus to 40 GPa to match COMSOL
-theta_deg = 15   # COMSOL uses no rotation
+theta_deg = 95   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = -125.0
 y0_prime = 4.0
-h = 518.29   # depth of inclusion top
+h = 531.0   # depth of inclusion top
 
 # ---------------------- STATION COORDINATES ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
@@ -30,7 +30,7 @@ y_prime = stations_df["y_prime"].values.astype(float)
 z = stations_df["depth"].values.astype(float)
 
 # ---------------------- PRESSURE HISTORY ----------------------
-pmax = 0.8e6 # Peak pressure (Pa) keep the pressure fix
+pmax = 0.45e6 # Peak pressure (Pa) keep the pressure fix
 tpeak = 393333.0
 d = 0.4
 

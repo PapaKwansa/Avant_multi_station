@@ -149,8 +149,8 @@ def per_component_rmse(pred, obs, station_names):
 # Geometry-only inversion: optimize a, b, c
 # ============================================================
 
-def objective_abc(params_abc):
-    a_val, b_val, c_val = params_abc
+def objective_abct(params_abct):
+    a_val, b_val, c_val, theta_val = params_abct
 
     df_pred = forward_model_multi_station(
         pmax=pmax_fixed,
@@ -168,7 +168,7 @@ def objective_abc(params_abc):
         nu=nu,
         h=h_fixed,
         E=E_fixed,
-        theta_deg=theta_fixed,
+        theta_deg=theta_val,   # <-- now variable
         alpha=alpha,
         station_names=station_names,
         debug=False,
@@ -177,18 +177,21 @@ def objective_abc(params_abc):
     pred = df_pred[model_cols].values.astype(float)
     return rmse(pred, obs_matrix)
 
+
 a_bounds = (20.0, 300.0)
 b_bounds = (20.0, 250.0)
 c_bounds = (0.5, 20.0)
+theta_bounds = (-180.0, 180.0)
 
-bounds_abc = [a_bounds, b_bounds, c_bounds]
 
-print("\n[INFO] Starting differential evolution for a, b, c...")
-print(f"[INFO] bounds = {bounds_abc}")
+bounds_abct = [a_bounds, b_bounds, c_bounds, theta_bounds]
 
-result_abc = differential_evolution(
-    objective_abc,
-    bounds=bounds_abc,
+print("\n[INFO] Starting differential evolution for a, b, c, theta...")
+print(f"[INFO] bounds = {bounds_abct}")
+
+result_abct = differential_evolution(
+    objective_abct,
+    bounds=bounds_abct,
     seed=42,
     maxiter=120,
     popsize=12,
@@ -197,14 +200,14 @@ result_abc = differential_evolution(
     workers=1,
 )
 
-a_best, b_best, c_best = result_abc.x
-best_rmse_abc = float(result_abc.fun)
+a_best, b_best, c_best, theta_best = result_abct.x
+best_rmse_abct = float(result_abct.fun)
 
 print("\n[RESULT] Geometry-only inversion")
 print(f"a_best = {a_best:.6g}")
 print(f"b_best = {b_best:.6g}")
 print(f"c_best = {c_best:.6g}")
-print(f"RMSE = {best_rmse_abc:.6g}")
+print(f"theta_best = {theta_best:.6g}")
 
 best_pred_abc = forward_model_multi_station(
     pmax=pmax_fixed,
@@ -242,7 +245,8 @@ results = {
     "a_best": float(a_best),
     "b_best": float(b_best),
     "c_best": float(c_best),
-    "rmse": float(best_rmse_abc),
+    "theta_best": float(theta_best),
+    "rmse": float(best_rmse_abct),
     "best_scalar": float(best_scalar_abc),
     "x0_prime": float(X0_USER),
     "y0_prime": float(Y0_USER),
@@ -256,7 +260,7 @@ results = {
         "nu": nu,
         "alpha": alpha,
     },
-    "bounds": bounds_abc,
+    "bounds": bounds_abct,
     "per_component_rmse_best": pc_rmse_best,
 }
 

@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Full sensitivity + global search + Sobol analysis for the multi-station forward model.
+Full sensitivity + global search + Sobol + correlation analysis
+for the multi-station forward model, using the accepted geometry
+(a=136.229, b=68.5495, c=20) as the baseline.
 
 Requirements:
 - forward_model_multi_station.py
@@ -103,6 +105,7 @@ def safe_float(x, fallback):
 def savefig_with_legend_below(fig, ax, filename, ncol=3):
     """
     Place legend below the axes, then save.
+    THIS IS ONE PLACE WHERE LEGEND POSITION IS CONTROLLED.
     """
     handles, labels = ax.get_legend_handles_labels()
     if handles:
@@ -120,6 +123,7 @@ def savefig_with_legend_below(fig, ax, filename, ncol=3):
 def savefig_grid_with_legend_below(fig, axes, filename, ncol=3):
     """
     For multi-axes figures: put a single legend below using first axes that has handles.
+    THIS IS ANOTHER PLACE WHERE LEGEND POSITION IS CONTROLLED.
     """
     handles, labels = [], []
     for ax in axes.ravel():
@@ -227,28 +231,29 @@ print(f"[INFO] Observed mean abs: {np.mean(np.abs(obs_matrix)):.6g}")
 print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 
 # ============================================================
-# Baseline values from input
+# Baseline values (using accepted geometry for a, b, c)
 # ============================================================
 
 nu0 = safe_float(params.get("nu", 0.25), 0.25)
 alpha0 = safe_float(params.get("alpha", 0.8), 0.8)
 
-a0 = safe_float(params.get("a_fixed", 150.0), 150.0)
-b0 = safe_float(params.get("b_fixed", 290.0), 290.0)
-c0 = safe_float(params.get("c_fixed", 2.5), 2.5)
+# OVERRIDE GEOMETRY WITH ACCEPTED BEST-FIT VALUES
+a0 = 136.229
+b0 = 68.5495
+c0 = 20.0
 
 x00 = safe_float(params.get("x0_prime", 0.0), 0.0)
 y00 = safe_float(params.get("y0_prime", 0.0), 0.0)
 h0 = safe_float(params.get("h", 518.29), 518.29)
 
-pmax0 = safe_float(params.get("pmax", 2.0e6), 2.0e6)
+pmax0 = safe_float(params.get("pmax", 4.5e5), 4.5e5)
 tpeak0 = safe_float(params.get("tpeak", 393333.0), 393333.0)
 d0 = safe_float(params.get("d", 0.4), 0.4)
 
 E0 = safe_float(params.get("E", 2.0e9), 2.0e9)
-theta0 = safe_float(params.get("theta_deg", 75.0), 75.0)
+theta0 = safe_float(params.get("theta_deg", 15.0), 15.0)
 
-print("[INFO] Baseline values from input:")
+print("[INFO] Baseline values (with accepted geometry):")
 print(f"       nu = {nu0:.6g}")
 print(f"       alpha = {alpha0:.6g}")
 print(f"       a = {a0:.6g}")
@@ -374,7 +379,7 @@ if baseline["volume_rmse"] is not None:
     print(f"[INFO] baseline volume RMSE = {baseline['volume_rmse']:.6g}")
 
 # ============================================================
-# 1D sweep definitions
+# 1D sweep definitions (updated geometry ranges)
 # ============================================================
 
 station_span = max(np.ptp(x_prime), np.ptp(y_prime))
@@ -387,14 +392,15 @@ sweep_defs = [
     dict(key="alpha", label="Biot coefficient α", kind="linear",
          low=max(0.1, alpha0 * 0.4), high=min(1.5, alpha0 * 1.6), n=N_1D, plot_scale=1.0),
 
+    # Geometry sweeps centered around accepted geometry
     dict(key="a_fixed", label="Semi-axis a (m)", kind="linear",
-         low=50, high=300, n=N_1D, plot_scale=1.0),
+         low=80.0, high=200.0, n=N_1D, plot_scale=1.0),
 
     dict(key="b_fixed", label="Semi-axis b (m)", kind="linear",
-         low=50, high=500, n=N_1D, plot_scale=1.0),
+         low=40.0, high=120.0, n=N_1D, plot_scale=1.0),
 
     dict(key="c_fixed", label="Semi-axis c (m)", kind="linear",
-         low=1, high=20, n=N_1D, plot_scale=1.0),
+         low=10.0, high=30.0, n=N_1D, plot_scale=1.0),
 
     dict(key="x0_prime", label="Center x₀′ (m)", kind="linear",
          low=x00 - center_window, high=x00 + center_window, n=N_1D, plot_scale=1.0),
@@ -722,13 +728,13 @@ global_records = []
 if RUN_GLOBAL_SEARCH:
     print("\n[INFO] Running global multi-parameter search to reduce RMSE")
 
-    # Define reasonable ranges (edit as needed)
+    # Define reasonable ranges (updated geometry ranges)
     search_ranges = {
         "E": (max(1e8, E0 * 0.25), max(1e8 * 1.001, E0 * 4.0)),
         "theta_deg": (-90.0, 90.0),
-        "a_fixed": (50.0, 300.0),
-        "b_fixed": (50.0, 500.0),
-        "c_fixed": (1.0, 20.0),
+        "a_fixed": (80.0, 200.0),
+        "b_fixed": (40.0, 120.0),
+        "c_fixed": (10.0, 30.0),
         "x0_prime": (x00 - center_window, x00 + center_window),
         "y0_prime": (y00 - center_window, y00 + center_window),
         "h": (max(1.0, h0 * 0.5), max(1.0, h0 * 1.5)),
@@ -743,7 +749,6 @@ if RUN_GLOBAL_SEARCH:
     lows = np.array([search_ranges[k][0] for k in keys], dtype=float)
     highs = np.array([search_ranges[k][1] for k in keys], dtype=float)
 
-    # Simple random sampling (could be replaced with LHS)
     rng = np.random.default_rng(123)
     samples = rng.random((N_GLOBAL_SAMPLES, len(keys)))
     samples = lows + samples * (highs - lows)
@@ -783,6 +788,42 @@ if RUN_GLOBAL_SEARCH:
         savefig_with_legend_below(fig_g, ax_g,
                                   f"global_search_rmse_vs_{k}.png", ncol=1)
 
+    # ========================================================
+    # Correlation matrix (parameters vs strain RMSE)
+    # ========================================================
+
+    corr_cols = [c for c in global_df.columns
+                 if np.issubdtype(global_df[c].dtype, np.number)]
+    corr = global_df[corr_cols].corr()
+
+    fig_c, ax_c = plt.subplots(figsize=(10, 8))
+    im = ax_c.imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+
+    cbar = fig_c.colorbar(im, ax=ax_c)
+    cbar.set_label("Correlation", fontweight="bold")
+
+    ax_c.set_xticks(np.arange(len(corr_cols)))
+    ax_c.set_yticks(np.arange(len(corr_cols)))
+    ax_c.set_xticklabels(corr_cols, rotation=45, ha="right")
+    ax_c.set_yticklabels(corr_cols)
+    ax_c.set_title("Correlation matrix: parameters and strain RMSE",
+                   fontweight="bold")
+    ax_c.tick_params(axis="both", which="both", length=0)
+
+    for i in range(len(corr_cols)):
+        for j in range(len(corr_cols)):
+            val = corr.iloc[i, j]
+            ax_c.text(j, i, f"{val:.2f}",
+                      ha="center", va="center",
+                      color="black" if abs(val) < 0.7 else "white",
+                      fontsize=9)
+
+    fig_c.tight_layout()
+    path_corr = os.path.join(OUT_DIR, "global_search_correlation_matrix.png")
+    fig_c.savefig(path_corr, dpi=300, bbox_inches="tight")
+    plt.close(fig_c)
+    print(f"[INFO] Saved {path_corr}")
+
 # ============================================================
 # Sobol sensitivity analysis (if SALib available)
 # ============================================================
@@ -792,26 +833,28 @@ sobol_results = None
 if RUN_SOBOL:
     print("\n[INFO] Running Sobol sensitivity analysis (SALib)")
 
-    # Choose a subset of parameters for Sobol (to keep dimension manageable)
+    # Focused parameter set for Sobol (geometry + key physics)
     sobol_params = [
-        "E", "theta_deg", "a_fixed", "b_fixed", "c_fixed",
-        "x0_prime", "y0_prime", "h", "pmax", "tpeak", "d", "nu", "alpha"
+        "a_fixed", "b_fixed", "c_fixed",
+        "E", "h", "pmax",
+        "x0_prime", "y0_prime",
+        "theta_deg", "nu", "alpha", "d", "tpeak"
     ]
 
     sobol_ranges = {
+        "a_fixed": (80.0, 200.0),
+        "b_fixed": (40.0, 120.0),
+        "c_fixed": (10.0, 30.0),
         "E": (max(1e8, E0 * 0.25), max(1e8 * 1.001, E0 * 4.0)),
-        "theta_deg": (-90.0, 90.0),
-        "a_fixed": (50.0, 300.0),
-        "b_fixed": (50.0, 500.0),
-        "c_fixed": (1.0, 20.0),
-        "x0_prime": (x00 - center_window, x00 + center_window),
-        "y0_prime": (y00 - center_window, y00 + center_window),
         "h": (max(1.0, h0 * 0.5), max(1.0, h0 * 1.5)),
         "pmax": (max(1e3, pmax0 * 0.25), max(1e3 * 1.001, pmax0 * 4.0)),
-        "tpeak": (max(1.0, tpeak0 * 0.5), max(1.0, tpeak0 * 1.5)),
-        "d": (max(0.01, d0 * 0.25), max(0.05, d0 * 4.0)),
+        "x0_prime": (x00 - center_window, x00 + center_window),
+        "y0_prime": (y00 - center_window, y00 + center_window),
+        "theta_deg": (-90.0, 90.0),
         "nu": (0.15, 0.35),
         "alpha": (max(0.1, alpha0 * 0.4), min(1.5, alpha0 * 1.6)),
+        "d": (max(0.01, d0 * 0.25), max(0.05, d0 * 4.0)),
+        "tpeak": (max(1.0, tpeak0 * 0.5), max(1.0, tpeak0 * 1.5)),
     }
 
     problem = {
@@ -820,100 +863,66 @@ if RUN_SOBOL:
         "bounds": [sobol_ranges[p] for p in sobol_params],
     }
 
-    # Generate samples
-    X = saltelli.sample(problem, N_SOBOL_SAMPLES, calc_second_order=True)
+    # Saltelli sampling
+    X = saltelli.sample(problem, N_SOBOL_SAMPLES, calc_second_order=False)
     Y = np.zeros(X.shape[0], dtype=float)
 
     print(f"[INFO] Sobol sample size: {X.shape[0]}")
 
     for i in range(X.shape[0]):
-        overrides = {sobol_params[j]: float(X[i, j]) for j in range(len(sobol_params))}
+        overrides = {name: float(X[i, j]) for j, name in enumerate(sobol_params)}
         out = eval_model(overrides=overrides)
         Y[i] = out["strain_rmse"]
 
-    # Analyze
-    Si = sobol.analyze(problem, Y, calc_second_order=True, print_to_console=False)
-    sobol_results = Si
+    sobol_results = sobol.analyze(problem, Y, calc_second_order=False, print_to_console=False)
 
-    # Save raw Sobol results
-    sobol_dict = {
-        "S1": Si["S1"].tolist(),
-        "S1_conf": Si["S1_conf"].tolist(),
-        "ST": Si["ST"].tolist(),
-        "ST_conf": Si["ST_conf"].tolist(),
-        "S2": Si["S2"].tolist(),
-        "S2_conf": Si["S2_conf"].tolist(),
-        "names": sobol_params,
-    }
-    with open(os.path.join(OUT_DIR, "sobol_results.json"), "w") as f:
-        json.dump(sobol_dict, f, indent=2)
-    print(f"[INFO] Saved Sobol results to sobol_results.json")
+    S1 = sobol_results["S1"]
+    S1_conf = sobol_results["S1_conf"]
+    ST = sobol_results["ST"]
+    ST_conf = sobol_results["ST_conf"]
 
-    # Bar plot for first-order and total-order indices
-    indices = np.arange(len(sobol_params))
+    sobol_df = pd.DataFrame({
+        "parameter": sobol_params,
+        "S1": S1,
+        "S1_conf": S1_conf,
+        "ST": ST,
+        "ST_conf": ST_conf,
+    })
+    sobol_csv = os.path.join(OUT_DIR, "sobol_strain_rmse_results.csv")
+    sobol_df.to_csv(sobol_csv, index=False)
+    print(f"[INFO] Saved {sobol_csv}")
+
+    # High-quality Sobol bar plot with legend below
+    fig_s, ax_s = plt.subplots(figsize=(11, 7))
+
+    x = np.arange(len(sobol_params))
     width = 0.35
 
-    fig_s, ax_s = plt.subplots(figsize=(12, 7))
-    ax_s.bar(indices - width/2, Si["S1"], width,
-             yerr=Si["S1_conf"], color="steelblue", label="First-order S1")
-    ax_s.bar(indices + width/2, Si["ST"], width,
-             yerr=Si["ST_conf"], color="darkorange", label="Total-order ST")
+    ax_s.bar(x - width/2, S1, width, yerr=S1_conf,
+             label="First-order S1", color="steelblue", alpha=0.9,
+             capsize=4)
+    ax_s.bar(x + width/2, ST, width, yerr=ST_conf,
+             label="Total-order ST", color="darkorange", alpha=0.9,
+             capsize=4)
 
-    ax_s.set_xticks(indices)
+    ax_s.set_xticks(x)
     ax_s.set_xticklabels(sobol_params, rotation=45, ha="right")
     ax_s.set_ylabel("Sobol index")
     ax_s.set_title("Sobol sensitivity indices for strain RMSE")
-    fig_s.tight_layout(rect=[0, 0.18, 1, 0.96])
-    savefig_with_legend_below(fig_s, ax_s, "sobol_indices_strain_rmse.png", ncol=2)
 
-# ============================================================
-# Save global summary
-# ============================================================
+    # HERE WE CONTROL LEGEND PLACEMENT FOR THE SOBOL PLOT
+    handles, labels = ax_s.get_legend_handles_labels()
+    fig_s.subplots_adjust(bottom=0.22)
+    fig_s.legend(handles, labels,
+                 loc="lower center",
+                 bbox_to_anchor=(0.5, 0.04),
+                 ncol=2,
+                 frameon=True)
 
-best_rows = []
-for k, res in sweep_results.items():
-    best_rows.append({
-        "parameter": k,
-        "label": res["label"],
-        "baseline_value": float(res["baseline_value"]),
-        "best_value": float(res["best_value"]),
-        "baseline_rmse": float(baseline["strain_rmse"]),
-        "best_rmse": float(res["best_rmse"]),
-        "improvement_pct": 100.0 * (baseline["strain_rmse"] - res["best_rmse"]) /
-                           max(baseline["strain_rmse"], 1e-12),
-    })
+    fig_s.tight_layout(rect=[0, 0.08, 1, 0.96])
+    sobol_png = os.path.join(OUT_DIR, "sobol_strain_rmse_indices.png")
+    fig_s.savefig(sobol_png, dpi=300, bbox_inches="tight")
+    plt.close(fig_s)
+    print(f"[INFO] Saved {sobol_png}")
 
-best_df = pd.DataFrame(best_rows)
-best_df.to_csv(os.path.join(OUT_DIR, "sensitivity_summary.csv"), index=False)
-
-summary = {
-    "baseline_strain_rmse": float(baseline["strain_rmse"]),
-    "baseline_volume_rmse": None if baseline["volume_rmse"] is None else float(baseline["volume_rmse"]),
-    "station_names": list(station_names),
-    "fixed_values": {
-        "nu": nu0,
-        "alpha": alpha0,
-        "a": a0,
-        "b": b0,
-        "c": c0,
-        "x0_prime": x00,
-        "y0_prime": y00,
-        "h": h0,
-        "pmax": pmax0,
-        "tpeak": tpeak0,
-        "d": d0,
-        "E": E0,
-        "theta_deg": theta0,
-    },
-    "heatmaps_enabled": bool(RUN_HEATMAPS),
-    "volume_used": bool(use_volume),
-    "global_best_rmse": float(global_best["rmse"]) if RUN_GLOBAL_SEARCH else None,
-    "global_best_params": global_best["params"] if RUN_GLOBAL_SEARCH else None,
-    "sobol_enabled": bool(RUN_SOBOL),
-}
-
-with open(os.path.join(OUT_DIR, "sensitivity_summary.json"), "w") as f:
-    json.dump(summary, f, indent=2)
-
-print("\n[INFO] Full sensitivity analysis complete.")
-print(f"[INFO] Results saved in: {OUT_DIR}")
+print("\n[INFO] Sensitivity, global search, Sobol, and correlation analyses complete.")
