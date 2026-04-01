@@ -1,16 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
 PyDREAM inversion for multi-station strain + volume.
 
 Geometry:
-    a = a_fixed
-    b = b_fixed
-    c = c_fixed
+    a, b, c are now INFERRED (not fixed).
+    E and theta are also inferred.
+    Aleatoric strain noise is inferred as a separate parameter.
 
-Only E and theta are inferred.
-
-Noise scale is kept fixed from the observed data.
-
-IMPORTANT:
 The observed strain vector is built in the same component-major order
 as the forward-model prediction to avoid misaligned likelihood terms.
 """
@@ -74,14 +72,15 @@ Ns = len(station_names)
 print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
 
 # ============================================================
-# Geometry (fixed)
+# Geometry baseline (for priors only)
 # ============================================================
 
-a_fixed = float(params["a_fixed"])
-b_fixed = float(params["b_fixed"])
-c_fixed = float(params["c_fixed"])
+# These are used to define prior ranges, not fixed values.
+a_baseline = float(params["a_fixed"])
+b_baseline = float(params["b_fixed"])
+c_baseline = float(params["c_fixed"])
 
-print(f"[INFO] Using FIXED geometry: a={a_fixed}, b={b_fixed}, c={c_fixed}")
+print(f"[INFO] Baseline geometry (for priors): a={a_baseline}, b={b_baseline}, c={c_baseline}")
 
 # ============================================================
 # Forward-model column detection
@@ -117,9 +116,9 @@ def detect_component_columns():
             x0_prime=float(params["x0_prime"]),
             y0_prime=float(params["y0_prime"]),
             z=z,
-            a=a_fixed,
-            b=b_fixed,
-            c=c_fixed,
+            a=a_baseline,
+            b=b_baseline,
+            c=c_baseline,
             nu=params["nu"],
             h=float(params["h"]),
             E=float(params["E"]),
@@ -206,7 +205,7 @@ def standardize_observed_strain(df, component_cols):
         if all(c in df.columns for c in component_cols):
             return df, component_cols
 
-    # Case 3: generic 16-channel file in file order
+    # Case 3: generic N-channel file in file order
     if len(strain_cols) == len(component_cols):
         rename_map = {old: new for old, new in zip(strain_cols, component_cols)}
         df = df.rename(columns=rename_map)
@@ -225,9 +224,7 @@ def flatten_columns(df, cols):
 
 observed_vector = flatten_columns(observed_df, COMPONENT_COLS)
 
-sigma_noise = 0.2 * np.std(observed_vector)
 print(f"[INFO] Observed vector shape: {observed_vector.shape}")
-print(f"[INFO] Estimated noise scale: {sigma_noise:.3f}")
 
 # ============================================================
 # Volume observations
@@ -237,7 +234,7 @@ VOLUME_COLUMN = "Volume"
 VOLUME_WEIGHT = 1.0
 
 volume_obs = None
-sigma_volume = None
+sigma_volume_fixed = None  # we keep volume noise fixed for now
 
 if VOLUME_COLUMN in observed_df.columns:
     volume_obs = observed_df[VOLUME_COLUMN].values.astype(float)
@@ -256,8 +253,10 @@ elif os.path.exists(VOLUME_FILE):
             raise RuntimeError("Volume time array does not match strain time array.")
 
 if volume_obs is not None:
-    sigma_volume = max(0.05 * np.std(volume_obs), 1.0)
+    sigma_volume_fixed = max(0.05 * np.std(volume_obs), 1.0)
+    print(f"[INFO] Fixed volume noise scale: {sigma_volume_fixed:.3f}")
 
+# Simple pressure history for volume forward model
 delta_P = params["pmax"] * np.sin(np.pi * time / np.max(time))
 
 # ============================================================
@@ -270,21 +269,28 @@ y0_prime = float(params["y0_prime"])
 print(f"[INFO] Using inclusion center x0_prime={x0_prime:.3f}, y0_prime={y0_prime:.3f}")
 
 # ============================================================
-# Likelihood wrapper (E, theta only)
+# Likelihood wrapper (a, b, c, E, theta, log10_sigma_strain)
 # ============================================================
 
 def likelihood_wrapper(params_in):
     """
-    params_in = [E_s, theta_deg_s]
+    params_in = [a_s, b_s, c_s, E_s, theta_deg_s, log10_sigma_strain]
     """
-    E_s, theta_deg_s = np.ravel(params_in)
+    a_s, b_s, c_s, E_s, theta_deg_s, log10_sigma_s = np.ravel(params_in)
 
+    # Physical sanity checks
+    if a_s <= 0 or b_s <= 0 or c_s <= 0:
+        return -np.inf
     if E_s <= 0:
+        return -np.inf
+
+    sigma_strain = 10.0 ** log10_sigma_s
+    if sigma_strain <= 0:
         return -np.inf
 
     try:
         return bi.likelihood(
-            params=[a_fixed, b_fixed, c_fixed, E_s, theta_deg_s, sigma_noise],
+            params=[a_s, b_s, c_s, E_s, theta_deg_s, sigma_strain],
             observed_vector=observed_vector,
             time=time,
             x_prime=x_prime,
@@ -301,7 +307,7 @@ def likelihood_wrapper(params_in):
             component_cols=COMPONENT_COLS,
             volume_obs=volume_obs,
             delta_P=delta_P,
-            sigma_volume=sigma_volume,
+            sigma_volume=sigma_volume_fixed,
             volume_weight=VOLUME_WEIGHT,
             station_names=station_names,
         )
@@ -310,15 +316,30 @@ def likelihood_wrapper(params_in):
         return -np.inf
 
 # ============================================================
-# Priors (E, theta)
+# Priors (a, b, c, E, theta, log10_sigma_strain)
 # ============================================================
 
-param_priors = [
-    # E: 1 GPa to 30 GPa
-    SampledParam(uniform, loc=1.0e9, scale=2.9e10),
+# Geometry priors around your accepted / sensitivity ranges
+a_min, a_max = 80.0, 200.0
+b_min, b_max = 40.0, 120.0
+c_min, c_max = 10.0, 30.0
 
-    # theta: -90 to 90 degrees
-    SampledParam(uniform, loc=-90.0, scale=180.0),
+# E prior: 1–30 GPa
+E_min, E_max = 1.0e9, 3.0e10
+
+# theta prior: -90–90 deg
+theta_min, theta_max = -90.0, 90.0
+
+# Strain noise prior: log10(sigma_strain) in [log10(1), log10(500)]
+log10_sigma_min, log10_sigma_max = 0.0, np.log10(500.0)
+
+param_priors = [
+    SampledParam(uniform, loc=a_min, scale=a_max - a_min),               # a
+    SampledParam(uniform, loc=b_min, scale=b_max - b_min),               # b
+    SampledParam(uniform, loc=c_min, scale=c_max - c_min),               # c
+    SampledParam(uniform, loc=E_min, scale=E_max - E_min),               # E
+    SampledParam(uniform, loc=theta_min, scale=theta_max - theta_min),   # theta
+    SampledParam(uniform, loc=log10_sigma_min, scale=log10_sigma_max - log10_sigma_min),  # log10 sigma_strain
 ]
 
 # ============================================================
@@ -329,7 +350,7 @@ MAX_ITER = 50000
 BATCH_SIZE = 5000
 NCHAINS = 4
 R_HAT_THRESH = 1.1
-MODEL_NAME = "pydream_multi_station_strain_E_theta"
+MODEL_NAME = "pydream_multi_station_strain_geom_E_theta_sigma"
 MP_CTX = multiprocessing.get_context("spawn")
 
 def normalize_sampled_params(sampled_params):
@@ -409,7 +430,8 @@ def main():
     map_idx = int(np.argmax(logps))
     map_params = flat_samples[map_idx]
 
-    E_map, theta_map = map_params
+    a_map, b_map, c_map, E_map, theta_map, log10_sigma_map = map_params
+    sigma_map = 10.0 ** log10_sigma_map
 
     df_pred = forward_model_multi_station(
         pmax=params["pmax"],
@@ -421,9 +443,9 @@ def main():
         x0_prime=x0_prime,
         y0_prime=y0_prime,
         z=z,
-        a=a_fixed,
-        b=b_fixed,
-        c=c_fixed,
+        a=a_map,
+        b=b_map,
+        c=c_map,
         nu=params["nu"],
         h=params["h"],
         E=E_map,
@@ -441,31 +463,39 @@ def main():
 
     volume_r2 = None
     if volume_obs is not None:
-        V_pred_map = bi.volume_forward(a_fixed, b_fixed, c_fixed, E_map, params["nu"], delta_P)
+        V_pred_map = bi.volume_forward(a_map, b_map, c_map, E_map, params["nu"], delta_P)
         volume_r2 = compute_r2(volume_obs, V_pred_map)
 
     burn_frac = 0.5
     burn_in = int(len(flat_samples) * burn_frac)
     posterior_burn_in = flat_samples[burn_in:]
 
-    E_std = float(np.std(posterior_burn_in[:, 0]))
-    theta_std = float(np.std(posterior_burn_in[:, 1]))
+    a_std = float(np.std(posterior_burn_in[:, 0]))
+    b_std = float(np.std(posterior_burn_in[:, 1]))
+    c_std = float(np.std(posterior_burn_in[:, 2]))
+    E_std = float(np.std(posterior_burn_in[:, 3]))
+    theta_std = float(np.std(posterior_burn_in[:, 4]))
+    sigma_std = float(np.std(10.0 ** posterior_burn_in[:, 5]))
 
     summary = {
         "geometry": {
-            "a_fixed": float(a_fixed),
-            "b_fixed": float(b_fixed),
-            "c_fixed": float(c_fixed),
+            "a": {"MAP": float(a_map), "STD": a_std},
+            "b": {"MAP": float(b_map), "STD": b_std},
+            "c": {"MAP": float(c_map), "STD": c_std},
         },
         "E": {"MAP": float(E_map), "STD": E_std},
         "theta_deg": {"MAP": float(theta_map), "STD": theta_std},
-        "sigma_noise_fixed": float(sigma_noise),
+        "sigma_strain": {"MAP": float(sigma_map), "STD": sigma_std},
         "strain_R2": float(strain_r2),
         "volume_R2": None if volume_r2 is None else float(volume_r2),
         "volume_weight": float(VOLUME_WEIGHT),
         "priors": {
-            "E": [1.0e9, 3.0e10],       # 1–30 GPa
-            "theta_deg": [-90.0, 90.0], # -90–90 degrees
+            "a": [a_min, a_max],
+            "b": [b_min, b_max],
+            "c": [c_min, c_max],
+            "E": [E_min, E_max],
+            "theta_deg": [theta_min, theta_max],
+            "log10_sigma_strain": [log10_sigma_min, log10_sigma_max],
         },
     }
 
@@ -473,8 +503,10 @@ def main():
         json.dump(summary, f, indent=4)
 
     print("[INFO] Saved posterior_summary.json")
+    print(f"[INFO] MAP a: {a_map:.3f}, b: {b_map:.3f}, c: {c_map:.3f}")
     print(f"[INFO] MAP E: {E_map:.6e}")
     print(f"[INFO] MAP theta_deg: {theta_map:.3f}")
+    print(f"[INFO] MAP sigma_strain: {sigma_map:.3f}")
     print(f"[INFO] Strain R^2: {strain_r2:.4f}")
     if volume_r2 is not None:
         print(f"[INFO] Volume R^2: {volume_r2:.4f}")
