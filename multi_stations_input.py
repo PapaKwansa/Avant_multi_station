@@ -8,9 +8,9 @@ nu = 0.25
 alpha = 0.8
 
 # ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
-a_fixed = 136.229   # short axis / 2
-b_fixed = 68.5495   # long axis / 2, changed from 290 to 200 (a=136.229, b=68.5495, c=20)
-c_fixed = 20  #thickness / 2
+a_fixed = 150   # short axis / 2
+b_fixed = 290   # long axis / 2, changed from 290 to 200 (a=136.229, b=68.5495, c=20)
+c_fixed = 2.5  #thickness / 2
 
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
