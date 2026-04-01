@@ -15,7 +15,7 @@ c_fixed = 2.5  #thickness / 2
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
 E = 0.2e10 # Change this Elastic Modulus to 40 GPa to match COMSOL
-theta_deg = 95   # COMSOL uses no rotation
+theta_deg = 5   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = -125.0

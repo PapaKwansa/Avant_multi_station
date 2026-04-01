@@ -13,7 +13,7 @@ Fixed inputs from multi_stations_input:
 This script:
 1) Loads posterior samples and log-probabilities.
 2) Keeps post-burn-in samples from each chain.
-3) Builds posterior histograms using the full post-burn-in posterior.
+3) Builds posterior histograms from the top 1% of the post-burn-in posterior by log-probability.
 4) Plots a correlation matrix of the posterior parameters.
 5) Plots predictive fits with epistemic uncertainty and aleatoric noise.
 6) Saves a JSON summary.
@@ -76,6 +76,7 @@ SUMMARY_JSON = "posterior_processing_summary_ab_theta_center_sigma.json"
 PLOT_PREFIX = "predictive_fit_station_ab_theta_center_sigma"
 
 BURN_FRAC = 0.5
+HIST_TOP_PERCENT = 1.0
 N_POSTERIOR_SAMPLES = 400
 LOW = 5
 HIGH = 95
@@ -248,7 +249,13 @@ print(f"[INFO] Post-burn-in samples: {posterior_burn.shape[0]}")
 # ============================================================
 
 def plot_posterior_histograms(samples, logps):
-    sigma_strain = 10.0 ** samples[:, 5]
+    sorted_idx = np.argsort(logps)[::-1]
+    n_keep = max(1, int(len(sorted_idx) * (HIST_TOP_PERCENT / 100.0)))
+    hist_samples = samples[sorted_idx[:n_keep]]
+
+    print(f"[INFO] Using top {HIST_TOP_PERCENT}% of post-burn-in samples for histograms ({len(hist_samples)} draws).")
+
+    sigma_strain = 10.0 ** hist_samples[:, 5]
     map_params, map_idx = get_map_params(samples, logps)
     sigma_map = 10.0 ** map_params[5]
 
@@ -265,11 +272,11 @@ def plot_posterior_histograms(samples, logps):
     ]
 
     data_list = [
-        samples[:, 0],
-        samples[:, 1],
-        samples[:, 2],
-        samples[:, 3],
-        samples[:, 4],
+        hist_samples[:, 0],
+        hist_samples[:, 1],
+        hist_samples[:, 2],
+        hist_samples[:, 3],
+        hist_samples[:, 4],
         sigma_strain,
     ]
 
@@ -348,8 +355,8 @@ def plot_correlation_matrix(samples):
 
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Correlation", fontweight="bold")
-    ax.set_title("Correlation matrix: post-burn-in posterior parameters", pad=16)
-    fig.tight_layout(rect=[0, 0.02, 1, 0.96])
+    ax.set_title("Correlation matrix: post-burn-in posterior parameters", pad=25)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.92])
 
     plt.savefig(CORR_OUTFILE)
     plt.close()
