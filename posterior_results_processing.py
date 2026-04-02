@@ -80,6 +80,10 @@ HIST_TOP_PERCENT = 1.0
 N_POSTERIOR_SAMPLES = 400
 LOW = 5
 HIGH = 95
+CV_MIN_MEAN = 1e-9
+
+# Filled by plot_predictive_fit and written to the JSON summary
+PREDICTIVE_CV = {}
 
 # ============================================================
 # Load inversion inputs
@@ -142,6 +146,15 @@ def compute_r2(obs, pred):
     ss_res = np.sum((obs - pred) ** 2)
     ss_tot = np.sum((obs - np.mean(obs)) ** 2)
     return 1.0 - ss_res / ss_tot
+
+
+def coefficient_of_variation(arr, axis=0, eps=1e-12, min_mean=CV_MIN_MEAN):
+    """Return std/abs(mean), with NaN where the mean is too close to zero."""
+    mu = np.mean(arr, axis=axis)
+    sd = np.std(arr, axis=axis)
+    cv = sd / (np.abs(mu) + eps)
+    cv = np.where(np.abs(mu) < min_mean, np.nan, cv)
+    return cv
 
 
 def standardize_observed_strain(df, station_names_local):
@@ -355,8 +368,8 @@ def plot_correlation_matrix(samples):
 
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Correlation", fontweight="bold")
-    ax.set_title("Correlation matrix: post-burn-in posterior parameters", pad=25)
-    fig.tight_layout(rect=[0, 0.02, 1, 0.92])
+    ax.set_title("Correlation matrix: post-burn-in posterior parameters", pad=16)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.96])
 
     plt.savefig(CORR_OUTFILE)
     plt.close()
@@ -406,6 +419,7 @@ def plot_predictive_fit(samples, logps):
 
     for station_name in station_names:
         fig, ax = plt.subplots(figsize=(18, 10))
+        station_cv = {}
 
         for i, comp in enumerate(COMPONENTS):
             col = f"{comp}_{station_name}"
@@ -445,6 +459,15 @@ def plot_predictive_fit(samples, logps):
 
             param_curves = np.asarray(param_curves)
             total_curves = np.asarray(total_curves)
+
+            cv_param = coefficient_of_variation(param_curves, axis=0)
+            cv_total = coefficient_of_variation(total_curves, axis=0)
+            station_cv[comp] = {
+                "cv_param_mean": float(np.nanmean(cv_param)),
+                "cv_param_median": float(np.nanmedian(cv_param)),
+                "cv_total_mean": float(np.nanmean(cv_total)),
+                "cv_total_median": float(np.nanmedian(cv_total)),
+            }
 
             lower_param = np.percentile(param_curves, LOW, axis=0)
             upper_param = np.percentile(param_curves, HIGH, axis=0)
@@ -498,6 +521,7 @@ def plot_predictive_fit(samples, logps):
         out_name = f"{PLOT_PREFIX}_{station_name}_uncertainty.png"
         plt.savefig(out_name)
         plt.close()
+        PREDICTIVE_CV[station_name] = station_cv
         print(f"[INFO] Saved {out_name}")
 
 
@@ -575,6 +599,7 @@ def save_summary(samples, logps):
         "n_post_burn_samples": int(len(samples)),
         "n_draws_for_predictive_fit": int(min(N_POSTERIOR_SAMPLES, len(samples))),
         "parameter_names": PARAM_NAMES,
+        "predictive_cv": PREDICTIVE_CV,
     }
 
     with open(SUMMARY_JSON, "w") as f:
