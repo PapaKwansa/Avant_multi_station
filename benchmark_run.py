@@ -2,7 +2,8 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-import forward_model_multi_station
+import forward_model_multi_station as fm
+from forward_model_multi_station import forward_model_multi_station
 import multi_stations_input
 
 # ===============================
@@ -20,13 +21,13 @@ y_prime = params["y_prime"]
 x0_prime = params["x0_prime"]
 y0_prime = params["y0_prime"]
 z = params["z"]
-a_map = params["a_map"]
-b_map = params["b_map"]
+a_map = params["a_fixed"]  # a_map is just a fixed value for all stations
+b_map = params["b_fixed"]
 c_fixed = params["c_fixed"]
 nu = params["nu"]
 h = params["h"]
-E_fixed = params["E_fixed"]
-theta_map = params["theta_map"]
+E_fixed = params["E"]
+theta_map = params["theta_deg"]  # theta_map is just a fixed value for all stations
 alpha = params["alpha"]
 station_names = params["station_names"]
 
