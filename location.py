@@ -18,13 +18,17 @@ np.random.seed(42)
 BASE_DIR = os.path.dirname(__file__)
 STATION_FILE = os.path.join(BASE_DIR, "AVANT_stations.csv")
 OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
+RESULTS_FILE = os.path.join(BASE_DIR, "location_fit_xy_results.json")
+BEST_FIT_PNG = os.path.join(BASE_DIR, "location_fit_xy_best_fit.png")
+CENTER_PNG = os.path.join(BASE_DIR, "location_fit_xy_center.png")
+GEOM_PNG = os.path.join(BASE_DIR, "lens_geometry_planview.png")
 
 params = input_data.read_input()
 
 # --- DEBUG / EXPERIMENT SWITCHES --------------------------------
 EYY_FLIP = False    # set True to test flipping sign of model eYY
-Y_FLIP = False     # set True to test y_prime = -y_prime
-THETA_COMSOL = 15  # COMSOL-based tilt angle in degrees
+Y_FLIP = False      # set True to test y_prime = -y_prime
+THETA_COMSOL = None # set to a number (deg) to override input theta, or None to use input theta_deg
 # ---------------------------------------------------------------
 
 # ============================================================
@@ -52,12 +56,21 @@ print("[INFO] Station coordinates (x_prime, y_prime, depth):")
 for s, x, y, zz in zip(station_names, x_prime, y_prime, z):
     print(f"   {s}: ({x:.3f}, {y:.3f}, {zz:.3f})")
 
+# ============================================================
+# Geometry from input script
+# ============================================================
 
-# --- USER-DEFINED CENTER ------------------------------------
-X0_USER = -125.0   # <-- you type your chosen x0 here
-Y0_USER = 4.0    # <-- you type your chosen y0 here
-# -------------------------------------------------------------
+X0_USER = float(params["x0_prime"])
+Y0_USER = float(params["y0_prime"])
+H_USER = float(params["h"])
 
+# Use the exact semi-axes from the input script
+a_fixed = float(params["a_fixed"])
+b_fixed = float(params["b_fixed"])
+c_fixed = float(params["c_fixed"])
+
+# Use the input rotation unless overridden
+theta_fixed = float(params["theta_deg"]) if THETA_COMSOL is None else float(THETA_COMSOL)
 
 # ============================================================
 # Load observed data
@@ -104,18 +117,12 @@ print(f"[INFO] Observed std: {np.std(obs_matrix):.6g}")
 nu = float(params.get("nu", 0.25))
 alpha = float(params.get("alpha", 0.8))
 
-pmax_fixed = 2.0e6
+pmax_fixed = float(params.get("pmax", 0.45e6))
 tpeak_fixed = float(params.get("tpeak", 393333.0))
 d_fixed = float(params.get("d", 0.4))
 
-E_fixed = 2.0e9
-h_fixed = 518.29
-theta_fixed = 0.0 if THETA_COMSOL is None else float(THETA_COMSOL)
-
-# Fixed lens geometry
-a_fixed = 60.0   # short axis / 2
-b_fixed = 114.0   # long axis / 2
-c_fixed = 2.5     # thickness / 2
+E_fixed = float(params.get("E", 2.0e9))
+h_fixed = float(params.get("h", 518.29))
 
 print("[INFO] Fixed values:")
 print(f"       pmax = {pmax_fixed:.6g}")
@@ -126,7 +133,8 @@ print(f"       h = {h_fixed:.6g}")
 print(f"       a = {a_fixed:.6g}")
 print(f"       b = {b_fixed:.6g}")
 print(f"       c = {c_fixed:.6g}")
-print(f"       theta_deg (initial) = {theta_fixed:.6g}")
+print(f"       theta_deg = {theta_fixed:.6g}")
+print(f"       center = ({X0_USER:.6g}, {Y0_USER:.6g})")
 
 # ============================================================
 # Helpers
@@ -152,7 +160,7 @@ def make_predicted_matrix(E_val):
         x_prime=x_prime,
         y_prime=y_prime,
         x0_prime=X0_USER,
-        y0_prime=Y0_USER, 
+        y0_prime=Y0_USER,
         z=z,
         a=a_fixed,
         b=b_fixed,
@@ -165,6 +173,7 @@ def make_predicted_matrix(E_val):
         station_names=station_names,
         debug=False,
     )
+
     # Optional: flip sign of eYY components to test convention
     if EYY_FLIP:
         eyy_cols = [c for c in df_pred.columns if c.startswith("eYY_")]
@@ -178,7 +187,6 @@ def make_predicted_matrix(E_val):
 
 def per_component_rmse(pred, obs, station_names):
     """Compute RMSE per component (eXX/eYY/eXY/eZZ) and per station."""
-    n_comp = 4
     n_stat = len(station_names)
     out = {}
     for ic, comp in enumerate(["eXX", "eYY", "eXY", "eZZ"]):
@@ -202,7 +210,6 @@ print(f"[INFO] baseline best scalar a = {a_best:.6g}")
 print(f"[INFO] baseline RMSE (after rescaling) = {rmse_rescaled:.6g}")
 
 print("\n[INFO] Baseline diagnostic")
-print(f"[INFO] center fixed at (0,0)")
 print(f"[INFO] baseline pred min/max: {np.min(baseline_pred):.6g} / {np.max(baseline_pred):.6g}")
 print(f"[INFO] baseline pred mean abs: {np.mean(np.abs(baseline_pred)):.6g}")
 print(f"[INFO] baseline RMSE: {rmse(baseline_pred, obs_matrix):.6g}")
@@ -249,9 +256,8 @@ try:
 except ValueError:
     print("[WARN] Could not find S4 components in model_cols")
 
-
 # ============================================================
-# Optimize E and theta
+# Optimize E
 # ============================================================
 
 def objective(E_array):
@@ -259,16 +265,10 @@ def objective(E_array):
     pred = make_predicted_matrix(E_val)
     return rmse(pred, obs_matrix)
 
-E_bounds = (1e9, 3e10)        # Pa
-if THETA_COMSOL is None:
-    theta_bounds = (30.0, 120.0)  # free rotation
-else:
-    # narrow bounds around COMSOL tilt, e.g. ±15°
-    theta_bounds = (THETA_COMSOL - 15.0, THETA_COMSOL + 15.0)
-
+E_bounds = (1e9, 3e10)  # Pa
 bounds = [E_bounds]
 
-print("\n[INFO] Starting differential evolution over E and theta...")
+print("\n[INFO] Starting differential evolution over E...")
 print(f"[INFO] bounds = {bounds}")
 
 result = differential_evolution(
@@ -283,7 +283,7 @@ result = differential_evolution(
 )
 
 E_best = result.x[0]
-theta_best = theta_fixed   # because θ is no longer inverted
+theta_best = theta_fixed
 best_rmse = float(result.fun)
 best_pred = make_predicted_matrix(E_best)
 best_scalar = best_scalar_multiplier(best_pred, obs_matrix)
@@ -309,10 +309,9 @@ results = {
     "theta_deg_best": float(theta_best),
     "rmse": float(best_rmse),
     "best_scalar": float(best_scalar),
-    # include user-defined center for reference
     "x0_prime": float(X0_USER),
     "y0_prime": float(Y0_USER),
-    "fixed_center": [0.0, 0.0],
+    "fixed_center": [float(X0_USER), float(Y0_USER)],
     "fixed_values": {
         "pmax": pmax_fixed,
         "tpeak": tpeak_fixed,
@@ -326,28 +325,23 @@ results = {
         "nu": nu,
         "alpha": alpha,
     },
-   "bounds": [
-    [float(E_bounds[0]), float(E_bounds[1])]
-    
+    "bounds": [
+        [float(E_bounds[0]), float(E_bounds[1])]
     ],
-
     "Y_FLIP": bool(Y_FLIP),
+    "EYY_FLIP": bool(EYY_FLIP),
     "THETA_COMSOL": None if THETA_COMSOL is None else float(THETA_COMSOL),
     "per_component_rmse_baseline": pc_rmse,
     "per_component_rmse_best": pc_rmse_best,
-    }
+}
 
-with open("location_fit_xy_results.json", "w") as f:
+with open(RESULTS_FILE, "w") as f:
     json.dump(results, f, indent=2)
 
-print("[INFO] Saved location_fit_xy_results.json")
+print(f"[INFO] Saved {RESULTS_FILE}")
 
 # ============================================================
 # Plot best fit
-# ============================================================
-
-# ============================================================
-# High‑quality best‑fit plot (replaces old block)
 # ============================================================
 
 plt.rcParams.update({
@@ -366,7 +360,6 @@ fig, axes = plt.subplots(4, 4, figsize=(18, 14), constrained_layout=True)
 for i in range(16):
     ax = axes.flat[i]
 
-    # Observed vs predicted
     ax.plot(
         time_vals,
         obs_matrix[:, i],
@@ -385,7 +378,6 @@ for i in range(16):
     ax.set_title(model_cols[i], fontsize=12, pad=6)
     ax.grid(True, alpha=0.25)
 
-# One shared legend
 handles, labels = axes.flat[0].get_legend_handles_labels()
 fig.legend(
     handles,
@@ -397,68 +389,70 @@ fig.legend(
     bbox_to_anchor=(0.5, -0.02),
 )
 
-plt.savefig("location_fit_xy_best_fit.png", dpi=350, bbox_inches="tight")
+plt.savefig(BEST_FIT_PNG, dpi=350, bbox_inches="tight")
 plt.close()
-print("[INFO] Saved high‑quality location_fit_xy_best_fit.png")
-
+print(f"[INFO] Saved high-quality {BEST_FIT_PNG}")
 
 # ============================================================
-# Plot center (fixed)
+# Plot center (actual input center)
 # ============================================================
 
 plt.figure(figsize=(6, 5))
 plt.scatter(x_prime, y_prime, label="stations")
-plt.scatter([0.0], [0.0], marker="x", s=120, label="fixed center (0,0)")
+plt.scatter([X0_USER], [Y0_USER], marker="x", s=120, label="lens center")
 plt.xlabel("x_prime")
 plt.ylabel("y_prime")
-plt.title("Inclusion center (fixed at 0,0)")
+plt.title("Inclusion center")
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig("location_fit_xy_center.png")
+plt.savefig(CENTER_PNG, dpi=200)
 plt.close()
-print("[INFO] Saved location_fit_xy_center.png")
-
+print(f"[INFO] Saved {CENTER_PNG}")
 
 # ============================================================
-# Plot lens geometry in plan view
+# Plot lens geometry in plan view as a rectangle
 # ============================================================
 
-# Use best-fit center if you inverted for it; otherwise (0,0)
-x0 = 0.0
-y0 = 0.0
-
-# If you have best-fit center from another script, insert here:
-# x0 = x0_best
-# y0 = y0_best
-
+x0 = X0_USER
+y0 = Y0_USER
 theta_rad = np.radians(theta_best)
 
-# Parametric ellipse
-t = np.linspace(0, 2*np.pi, 400)
-x_ell = a_fixed * np.cos(t)
-y_ell = b_fixed * np.sin(t)
+# Full rectangle dimensions
+L_long = 590.0
+L_short = 300.0
 
-# Rotation matrix
+# Rectangle corners in local coordinates
+half_w = L_short / 2.0   # along local x
+half_h = L_long / 2.0    # along local y
+
+corners_local = np.array([
+    [-half_w, -half_h],
+    [ half_w, -half_h],
+    [ half_w,  half_h],
+    [-half_w,  half_h],
+    [-half_w, -half_h],
+])
+
+# Rotate rectangle
 R = np.array([
     [np.cos(theta_rad), -np.sin(theta_rad)],
     [np.sin(theta_rad),  np.cos(theta_rad)]
 ])
 
-xy_rot = R @ np.vstack([x_ell, y_ell])
-
-x_plot = xy_rot[0, :] + x0
-y_plot = xy_rot[1, :] + y0
+corners_rot = (R @ corners_local.T).T
+x_plot = corners_rot[:, 0] + x0
+y_plot = corners_rot[:, 1] + y0
 
 plt.figure(figsize=(7, 6))
-plt.plot(x_plot, y_plot, 'r-', linewidth=2, label='Lens boundary')
+plt.plot(x_plot, y_plot, 'r-', linewidth=2.5, label='Lens boundary')
 
-# Plot stations
 plt.scatter(x_prime, y_prime, c='k', s=60, label='Stations')
 
-# Label stations
 for s, xs, ys in zip(station_names, x_prime, y_prime):
     plt.text(xs + 10, ys + 10, s, fontsize=10)
+
+plt.scatter([x0], [y0], marker='x', s=120, c='blue', label='Lens center')
 
 plt.axhline(0, color='gray', linewidth=0.5)
 plt.axvline(0, color='gray', linewidth=0.5)
@@ -468,8 +462,9 @@ plt.ylabel("y' (m)")
 plt.title("Plan-view lens geometry and station layout")
 plt.legend()
 plt.grid(True, alpha=0.3)
+plt.axis("equal")
 plt.tight_layout()
-plt.savefig("lens_geometry_planview.png", dpi=200)
+plt.savefig(GEOM_PNG, dpi=200)
 plt.close()
 
-print("[INFO] Saved lens_geometry_planview.png")
+print(f"[INFO] Saved {GEOM_PNG}")
