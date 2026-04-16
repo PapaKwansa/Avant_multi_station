@@ -48,17 +48,32 @@ def pressure_time_series(pmax, tpeak, d, time):
     return p
 
 
-def primed_to_unprimed_fallback(x_prime, y_prime, x0_prime, y0_prime, theta_deg):
+def comsol_to_inclusion_frame(x_prime, y_prime, x0_prime, y0_prime, theta_deg):
     """
-    Fallback coordinate transform if multi_station_coord_transform is unavailable.
+    Transform COMSOL/global coordinates into the inclusion frame.
+
+    Assumption:
+      - (x_prime, y_prime) are COMSOL/global coordinates
+      - (x0_prime, y0_prime) is the inclusion center in COMSOL/global coordinates
+      - theta_deg is the angle that defines the inclusion-frame orientation
+
+    This uses the inverse rotation (global -> local frame):
+
+        [x_inc]   [ cosθ   sinθ ] [Δx]
+        [y_inc] = [-sinθ   cosθ ] [Δy]
+
+    where:
+        Δx = x' - x0'
+        Δy = y' - y0'
     """
     theta = np.radians(theta_deg)
     dx = np.asarray(x_prime, dtype=float) - x0_prime
     dy = np.asarray(y_prime, dtype=float) - y0_prime
 
-    x = dx * np.cos(theta) - dy * np.sin(theta)
-    y = dx * np.sin(theta) + dy * np.cos(theta)
-    return x, y
+    x_inc = dx * np.cos(theta) + dy * np.sin(theta)
+    y_inc = -dx * np.sin(theta) + dy * np.cos(theta)
+
+    return x_inc, y_inc
 
 
 def geometry_from_scale(s, a0, b0, c0):
@@ -83,7 +98,8 @@ def forward_model_multi_station(
     debug=False,
 ):
     """
-    Multi-station forward model aligned with COMSOL coordinates.
+    Multi-station forward model using coordinates transformed into the
+    inclusion frame before evaluating the strain solution.
     """
 
     x_prime = np.asarray(x_prime, dtype=float)
@@ -109,15 +125,10 @@ def forward_model_multi_station(
             )
         a, b, c = geometry_from_scale(s, a0, b0, c0)
 
-    # Relative to inclusion center (global COMSOL coordinates)
-    x_rel = x_prime - x0_prime
-    y_rel = y_prime - y0_prime
-
-    # Rotate relative coordinates by -theta_deg to move into inclusion frame
-    # (COMSOL tilt is clockwise; here positive theta_deg is clockwise)
-    theta = np.radians(theta_deg)
-    x_arr = x_rel * np.cos(theta) - y_rel * np.sin(theta)
-    y_arr = x_rel * np.sin(theta) + y_rel * np.cos(theta)
+    # Transform COMSOL/global coordinates into the inclusion frame
+    x_arr, y_arr = comsol_to_inclusion_frame(
+        x_prime, y_prime, x0_prime, y0_prime, theta_deg
+    )
 
     # Pressure history
     p_series = pressure_time_series(pmax, tpeak, d, time)
