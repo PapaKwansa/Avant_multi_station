@@ -76,7 +76,7 @@ SUMMARY_JSON = "posterior_processing_summary_ab_theta_center_sigma.json"
 PLOT_PREFIX = "predictive_fit_station_ab_theta_center_sigma"
 
 BURN_FRAC = 0.5
-HIST_TOP_PERCENT = 1.0
+# HIST_TOP_PERCENT = 1.0
 N_POSTERIOR_SAMPLES = 400
 LOW = 5
 HIGH = 95
@@ -262,11 +262,9 @@ print(f"[INFO] Post-burn-in samples: {posterior_burn.shape[0]}")
 # ============================================================
 
 def plot_posterior_histograms(samples, logps):
-    sorted_idx = np.argsort(logps)[::-1]
-    n_keep = max(1, int(len(sorted_idx) * (HIST_TOP_PERCENT / 100.0)))
-    hist_samples = samples[sorted_idx[:n_keep]]
+    hist_samples = samples   # use full post-burn-in posterior
 
-    print(f"[INFO] Using top {HIST_TOP_PERCENT}% of post-burn-in samples for histograms ({len(hist_samples)} draws).")
+    print(f"[INFO] Using all post-burn-in samples for histograms ({len(hist_samples)} draws).")
 
     sigma_strain = 10.0 ** hist_samples[:, 5]
     map_params, map_idx = get_map_params(samples, logps)
