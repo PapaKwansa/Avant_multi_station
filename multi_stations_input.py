@@ -5,7 +5,7 @@ from scipy.stats import uniform
 
 # ---------------------- MATERIAL ----------------------
 nu = 0.25
-alpha = 0.8
+alpha = 1.0
 
 # ---------------------- FIXED GEOMETRY (semi-axes) ----------------------
 a_fixed = 150   # short axis / 2
@@ -15,7 +15,7 @@ c_fixed = 2.5  #thickness / 2
 # ---------------------- ELASTIC PARAMETERS ----------------------
 # Initial guess (inversion will explore range)
 E = 0.2e10 # Change this Elastic Modulus to 40 GPa to match COMSOL
-theta_deg = 5   # COMSOL uses no rotation
+theta_deg = 15   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = 0
@@ -30,7 +30,7 @@ y_prime = stations_df["y_prime"].values.astype(float)
 z = stations_df["depth"].values.astype(float)
 
 # ---------------------- PRESSURE HISTORY ----------------------
-pmax = 0.45e6 # Peak pressure (Pa) keep the pressure fix
+pmax = 0.45e6 # Peak pressure (Pa) keep the pressure fix # changed this to 3800kPa
 tpeak = 393333.0
 d = 0.4
 
