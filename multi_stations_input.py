@@ -18,8 +18,8 @@ E = 0.2e10 # Change this Elastic Modulus to 40 GPa to match COMSOL
 theta_deg = 5   # COMSOL uses no rotation
 
 # ---------------------- INCLUSION CENTER ----------------------
-x0_prime = -33.549
-y0_prime = 91.226
+x0_prime = 0
+y0_prime = 0
 h = 531.0   # depth of inclusion top
 
 # ---------------------- STATION COORDINATES ----------------------

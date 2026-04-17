@@ -29,92 +29,77 @@ df_model = forward_model_multi_station(
 df_obs = pd.read_csv("avant_cleaned_strain.csv")
 
 # ------------------------------------------------------------
-# TIME ARRAYS IN SECONDS
+# TIME AXIS
 # ------------------------------------------------------------
-time_model = df_model["time_s"].values
 time_obs = df_obs["time_s"].values
+time_model = df_model["time_s"].values
 
 # ------------------------------------------------------------
 # COMPONENT ORDER
-# Must match the raw COMSOL export order
 # ------------------------------------------------------------
 components = ["eXX", "eYY", "eXY", "eZZ"]
 
 # ------------------------------------------------------------
-# OBSERVED COLUMN ORDER
-# Assumes 4 columns per station in the same component order
+# CHECK STATION COUNT
 # ------------------------------------------------------------
-obs_cols = [col for col in df_obs.columns if col.startswith("strain_")]
-obs_cols = sorted(obs_cols, key=lambda x: int(x.split("_")[1]))
+n_stations = len(params["station_names"])
+obs_cols = [f"strain_{i}" for i in range(1, 17)]
 
-n_stations_obs = len(obs_cols) // 4
-if len(obs_cols) % 4 != 0:
+if len(obs_cols) != 4 * n_stations:
     raise ValueError(
-        f"Observed strain columns ({len(obs_cols)}) is not divisible by 4."
-    )
-
-if len(params["station_names"]) > n_stations_obs:
-    raise ValueError(
-        f"Model has {len(params['station_names'])} stations but observed file "
-        f"only contains {n_stations_obs} station groups."
+        f"Observed file has {len(obs_cols)} strain columns, but expected {4 * n_stations} "
+        f"for {n_stations} stations and 4 components per station."
     )
 
 # ------------------------------------------------------------
-# PLOT SEPARATELY FOR EACH STATION
+# PLOT MODEL + OBSERVED ON THE SAME FIGURE FOR EACH STATION
 # ------------------------------------------------------------
-# ---------------------------------------------
-# The observed dataset has columns like:
-# time_s, strain_eXX_station1, strain_eYY_station1, strain_eXY_station1, strain_eZZ_station1,
-# strain_eXX_station2, strain_eYY_station2, strain_eXY_station2, strain_eZZ_station2, ...
-# We need to group these columns by station to plot them correctly.
-# ---------------------------------------------
 for i, station in enumerate(params["station_names"]):
     station = str(station).strip()
 
-    # observed columns for this station: 4 columns per station
-    obs_start = 4 * i
-    obs_end = obs_start + 4
-    station_obs_cols = obs_cols[obs_start:obs_end]
+    # Observed columns are component-major, not station-major
+    obs_map = {
+        "eXX": f"strain_{i + 1}",
+        "eYY": f"strain_{i + 1 + n_stations}",
+        "eXY": f"strain_{i + 1 + 2 * n_stations}",
+        "eZZ": f"strain_{i + 1 + 3 * n_stations}",
+    }
 
-    # safety check
-    if len(station_obs_cols) < 4:
-        print(f"Warning: not enough observed columns for station {station}, skipping.")
-        continue
-
-    # ---------------------------
-    # MODEL PLOT
-    # ---------------------------
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
 
     for comp in components:
         model_col = f"{comp}_{station}"
-        if model_col in df_model.columns:
-            ax.plot(time_model, df_model[model_col].values, label=f"Model {comp}")
-        else:
+        obs_col = obs_map[comp]
+
+        if model_col not in df_model.columns:
             print(f"Warning: {model_col} not found in model output.")
+            continue
+
+        if obs_col not in df_obs.columns:
+            print(f"Warning: {obs_col} not found in observed data.")
+            continue
+
+        # Plot model
+        line_model, = ax.plot(
+            time_model,
+            df_model[model_col].values,
+            label=f"Model {comp}"
+        )
+
+        # Plot observed with same color, dashed
+        ax.plot(
+            time_obs,
+            df_obs[obs_col].values,
+            linestyle="--",
+            color=line_model.get_color(),
+            label=f"Obs {comp}"
+        )
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Strain (nanostrain)")
-    ax.set_title(f"Model Strain Tensor Time Series — Station {station}")
+    ax.set_title(f"Model vs Observed Strain Tensor — Station {station}")
     ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.legend(ncol=2, fontsize=8)
     plt.tight_layout()
-    plt.savefig(f"model_time_series_{station}.png", dpi=300)
-    plt.show()
-
-    # ---------------------------
-    # OBSERVED PLOT
-    # ---------------------------
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    for comp, obs_col in zip(components, station_obs_cols):
-        ax.plot(time_obs, df_obs[obs_col].values, label=f"Observed {comp}")
-
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Strain (nanostrain)")
-    ax.set_title(f"Observed Strain Tensor Time Series — Station {station}")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(f"observed_time_series_{station}.png", dpi=300)
+    plt.savefig(f"model_vs_observed_{station}.png", dpi=300)
     plt.show()
