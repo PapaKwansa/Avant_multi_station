@@ -161,7 +161,7 @@ for i, station in enumerate(params["station_names"]):
     # AXIS LABELS
     # --------------------------------------------------------
     ax.set_xlabel("Time (s)", fontsize=20, fontweight="bold")
-    ax.set_ylabel("Strain", fontsize=20, fontweight="bold")
+    ax.set_ylabel("Strain (nε)", fontsize=20, fontweight="bold")
 
     # --------------------------------------------------------
     # TITLE
