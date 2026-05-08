@@ -20,7 +20,7 @@ theta_deg = 15   # COMSOL uses no rotation
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = 0
 y0_prime = 0
-h = 531.0   # depth of inclusion top
+h = 531.0   # depth of inclusion top # changed this to the depth of the contour
 
 # ---------------------- STATION COORDINATES ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
