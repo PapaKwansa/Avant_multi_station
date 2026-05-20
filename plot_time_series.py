@@ -196,9 +196,11 @@ for i, station in enumerate(params["station_names"]):
     # LEGEND
     # --------------------------------------------------------
     leg = ax.legend(
-        ncol=2,
-        loc="best",
-        fontsize=13
+    ncol=4,                      # all components in one row
+    loc="upper center",          # place legend above the bounding box
+    bbox_to_anchor=(0.5, -0.18), # move it below the plot
+    fontsize=13,
+    frameon=True
     )
 
     for text in leg.get_texts():
