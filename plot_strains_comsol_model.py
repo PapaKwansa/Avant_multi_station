@@ -6,11 +6,6 @@ from forward_model_multi_station import forward_model_multi_station
 import multi_stations_input as inp
 
 # ------------------------------------------------------------
-# USER INPUT
-# ------------------------------------------------------------
-user_depth = float(input("Enter observation depth (m): "))
-
-# ------------------------------------------------------------
 # LOAD PARAMETERS
 # ------------------------------------------------------------
 params = inp.read_input()
@@ -21,7 +16,7 @@ E      = params["E"]
 pmax   = params["pmax"]
 tpeak  = params["tpeak"]
 d      = params["d"]
-h      = params["h"]
+h      = params["h"]   # inclusion depth (maximum allowed observation depth)
 
 # Geometry (semi-axes)
 a = params["a_fixed"]
@@ -32,7 +27,29 @@ c = params["c_fixed"]
 x0 = params["x0_prime"]
 y0 = params["y0_prime"]
 
-theta_deg = params["theta_deg"]  # 0.0 in  COMSOL setup
+theta_deg = params["theta_deg"]  # 0.0 in COMSOL setup
+
+# ------------------------------------------------------------
+# USER INPUT WITH VALIDATION
+# ------------------------------------------------------------
+while True:
+    raw_depth = input(f"Enter observation depth (m) between 0 and {h:.1f}: ").strip()
+
+    try:
+        user_depth = float(raw_depth)
+    except ValueError:
+        print("Invalid input. Please enter a numeric value.")
+        continue
+
+    if user_depth <= 0:
+        print("Depth must be greater than 0 m.")
+        continue
+
+    if user_depth > h:
+        print(f"Depth must not be deeper than the inclusion depth ({h:.1f} m).")
+        continue
+
+    break
 
 # ------------------------------------------------------------
 # CREATE PLAN-VIEW GRID
@@ -92,50 +109,8 @@ eZZ = reshape_component("eZZ")
 # PLOTTING
 # ------------------------------------------------------------
 fig, axes = plt.subplots(2, 2, figsize=(18, 15))
-fig.subplots_adjust(top=0.90, hspace=0.35) 
+fig.subplots_adjust(top=0.90, hspace=0.35)
 
-# 👇 move ALL subplots downward
-fig.subplots_adjust(top=0.90)
-
-# 👇 place title safely above
-fig.suptitle(
-    f"Plan-view strain tensor components at depth {user_depth:.1f} m",
-    fontsize=20,
-    fontweight="bold"
-)
-
-fields = [eXX, eYY, eXY, eZZ]
-titles = [
-    rf"$\varepsilon_{{xx}}$ ",
-    rf"$\varepsilon_{{yy}}$ ",
-    rf"$\varepsilon_{{xy}}$ ",
-    rf"$\varepsilon_{{zz}}$ ",
-]
-
-for ax, data, title in zip(axes.flat, fields, titles):
-
-    # symmetric color scale for better visual comparison
-    vmax = np.nanmax(np.abs(data))
-    levels = np.linspace(-vmax, vmax, 40)
-
-    cont = ax.contourf(X, Y, data, levels=levels, cmap="RdBu_r", extend="both")
-
-    # colorbar
-    cbar = plt.colorbar(cont, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Nanostrain", fontsize=15, fontweight="bold")
-    cbar.ax.tick_params(labelsize=13)
-
-    # titles and labels
-    ax.set_title(title, fontsize=17, fontweight="bold", pad=12)
-    ax.set_xlabel("x (m)", fontsize=15, fontweight="bold")
-    ax.set_ylabel("y (m)", fontsize=15, fontweight="bold")
-
-    # axes styling
-    ax.set_aspect("equal")
-    ax.tick_params(axis="both", which="both", labelsize=13, width=1.5, length=5)
-    ax.grid(True, alpha=0.25, linewidth=0.8)
-
-# global title
 fig.suptitle(
     f"Plan-view strain fields at depth {user_depth:.1f} m",
     fontsize=20,
@@ -143,7 +118,31 @@ fig.suptitle(
     y=0.98
 )
 
-# save high-quality figure
-plt.savefig("strain_plan_view.png", dpi=300)
+fields = [eXX, eYY, eXY, eZZ]
+titles = [
+    rf"$\varepsilon_{{xx}}$",
+    rf"$\varepsilon_{{yy}}$",
+    rf"$\varepsilon_{{xy}}$",
+    rf"$\varepsilon_{{zz}}$",
+]
 
+for ax, data, title in zip(axes.flat, fields, titles):
+    vmax = np.nanmax(np.abs(data))
+    levels = np.linspace(-vmax, vmax, 40)
+
+    cont = ax.contourf(X, Y, data, levels=levels, cmap="RdBu_r", extend="both")
+
+    cbar = plt.colorbar(cont, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Nanostrain", fontsize=15, fontweight="bold")
+    cbar.ax.tick_params(labelsize=13)
+
+    ax.set_title(title, fontsize=17, fontweight="bold", pad=12)
+    ax.set_xlabel("x (m)", fontsize=15, fontweight="bold")
+    ax.set_ylabel("y (m)", fontsize=15, fontweight="bold")
+
+    ax.set_aspect("equal")
+    ax.tick_params(axis="both", which="both", labelsize=13, width=1.5, length=5)
+    ax.grid(True, alpha=0.25, linewidth=0.8)
+
+plt.savefig("strain_plan_view.png", dpi=300)
 plt.show()
