@@ -20,7 +20,7 @@ theta_deg = 15   # COMSOL uses no rotation
 # ---------------------- INCLUSION CENTER ----------------------
 x0_prime = 0
 y0_prime = 0
-h = 531.0   # depth of inclusion top # changed this to the depth of the contour
+h = 530.0   # depth of inclusion top # changed this to the depth of the contour
 
 # ---------------------- STATION COORDINATES ----------------------
 stations_df = pd.read_csv(os.path.join(os.path.dirname(__file__), "AVANT_stations.csv"))
@@ -31,7 +31,7 @@ z = stations_df["depth"].values.astype(float)
 
 # ---------------------- PRESSURE HISTORY ----------------------
 pmax = 0.45e6 # Peak pressure (Pa) keep the pressure fix # changed this to 3800kPa
-tpeak = 393333.0
+tpeak = 350000.0
 d = 0.4
 
 # Time array from observed data
