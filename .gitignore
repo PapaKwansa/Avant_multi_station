@@ -11,6 +11,7 @@ __pycache__/
 
 *.npy
 *.ipynb_checkpoints/
+*.egg-info/
 logs/
 checkpoints/
 

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avant-multi-station"
+version = "0.1.0"
+description = "Analytical multi-station strain modeling and inversion for Avant-like pressurized inclusions."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+inversion = [
+    "pydream",
+]
+sensitivity = [
+    "SALib",
+]
+plotting = [
+    "seaborn",
+    "scikit-learn",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

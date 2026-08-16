@@ -24,7 +24,7 @@ params = input_data.read_input()
 # --- DEBUG / EXPERIMENT SWITCHES --------------------------------
 EYY_FLIP = False    # set True to test flipping sign of model eYY
 Y_FLIP = False     # set True to test y_prime = -y_prime
-THETA_COMSOL = 75  # COMSOL-based tilt angle in degrees
+THETA_COMSOL = 5  # COMSOL-based tilt angle in degrees
 # ---------------------------------------------------------------
 
 # ============================================================

@@ -1,34 +1,9 @@
-import os
 import numpy as np
 import pandas as pd
 
-# Optional local module imports
-try:
-    import multi_stations_input
-except Exception:
-    multi_stations_input = None
-
-try:
-    import multi_station_coord_transform
-except Exception:
-    multi_station_coord_transform = None
-
-try:
-    import multi_station_strain
-except Exception:
-    multi_station_strain = None
-
-try:
-    import multi_station_rotation
-except Exception:
-    multi_station_rotation = None
-
-
-# Read station metadata
-STATION_FILE = os.path.join(os.path.dirname(__file__), "AVANT_stations.csv")
-stations_df = pd.read_csv(STATION_FILE)
-stations_df["station"] = stations_df["station"].astype(str).str.strip()
-
+from . import multi_station_coord_transform
+from . import multi_station_strain
+from . import multi_station_rotation
 
 def pressure_time_series(pmax, tpeak, d, time):
     """
