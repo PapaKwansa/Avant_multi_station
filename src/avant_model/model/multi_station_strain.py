@@ -30,6 +30,20 @@ deltamod = np.array([[0,1,0],[0,0,1],[1,0,0]])
 # Displacement-related functions
 # -----------------------------
 
+# Numerical note:
+# The analytical expressions below contain arctangent terms involving
+# ratios of corner-coordinate factors. At exact geometric alignments,
+# a denominator can become zero and NumPy may emit a divide-by-zero
+# warning while evaluating the intermediate ratio.
+#
+# A targeted diagnostic over the investigated theta-x0' domain found
+# only finite-over-zero cases, with no 0/0 cases and no non-finite
+# final strain tensors. The analytical expressions are therefore
+# intentionally retained unchanged.
+#
+# Diagnostic:
+# scripts/diagnostics/diagnose_strain_singularities.py
+
 def V0(x, y, z, a, b, c):
     C = C_matrix(x, y, z, a, b, c)
     R_n_list = [R_n(n, C) for n in range(8)]

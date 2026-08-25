@@ -2,513 +2,1970 @@
 # -*- coding: utf-8 -*-
 
 """
-PyDREAM inversion for multi-station strain.
+Production PyDREAM runner for the AVANT 1-Darcy transient analytical
+Bayesian inversion.
 
-Inferred parameters:
-    a, b, theta_deg, x0_prime, y0_prime, log10_sigma_strain
+==============================================================================
+CANONICAL MCMC STATE
+==============================================================================
 
-Fixed to true input values:
-    pmax, E, c, and all other forward-model settings not listed above.
+Physical parameters of interest:
 
-Notes:
-- sigma_strain is interpreted as an effective aleatoric noise scale that absorbs
-  mismatch between the layered COMSOL field model and the simplified analytical
-  half-space inclusion model.
-- This script uses only strain data. The volume term is intentionally omitted.
-- The forward model and observed data are aligned in component-major order:
-      eXX for all stations,
-      eYY for all stations,
-      eXY for all stations,
-      eZZ for all stations.
+    a
+    b
+    h
+    theta_deg
+    x0_prime
+    y0_prime
+
+Statistical nuisance parameter:
+
+    log10_sigma_strain
+
+Complete sampled state:
+
+    [
+        a,
+        b,
+        h,
+        theta_deg,
+        x0_prime,
+        y0_prime,
+        log10_sigma_strain,
+    ]
+
+==============================================================================
+CANONICAL 1-DARCY TRANSIENT DATA CONTRACT
+==============================================================================
+
+Station metadata:
+
+    datasets/comsol/1darcy/metadata/stations.csv
+
+Expected columns:
+
+    station,x,y,z
+
+Expected stations:
+
+    S01, S02, ..., S08
+
+Observed transient strain:
+
+    datasets/comsol/1darcy/processed/strain.csv
+
+Expected columns:
+
+    time_s
+
+    eXX_S01 ... eXX_S08
+    eYY_S01 ... eYY_S08
+    eZZ_S01 ... eZZ_S08
+    eXY_S01 ... eXY_S08
+
+The older datasets/AVANT_stations.csv file is intentionally ignored.
+That file belongs to an older four-station workflow and must never be
+silently selected for the current 1-Darcy transient inversion.
+
+==============================================================================
+SCIENTIFIC LIKELIHOOD
+==============================================================================
+
+The reusable likelihood is implemented in:
+
+    src/avant_model/inversion/bayesian_inversion_multi_station.py
+
+This runner supplies the data and fixed analytical-model parameters to that
+likelihood.
+
+==============================================================================
+RESPONSIBILITIES
+==============================================================================
+
+This script is responsible for:
+
+    1. Loading the canonical 1-Darcy transient station metadata.
+    2. Loading and validating the transient strain dataset.
+    3. Loading fixed analytical-model parameters.
+    4. Defining the PyDREAM priors.
+    5. Running the PyDREAM sampler.
+    6. Monitoring Gelman-Rubin convergence.
+    7. Saving posterior samples and provenance metadata.
+
+Posterior plotting and posterior-predictive analysis are intentionally
+implemented later in a separate post-processing module.
+
+==============================================================================
+MULTIPROCESSING
+==============================================================================
+
+The PyDREAM likelihood wrapper is defined at module scope.
+
+This is required for Windows multiprocessing with the "spawn" start method:
+nested functions such as main.<locals>.likelihood_wrapper cannot be pickled.
 """
 
+from __future__ import annotations
+
+# ============================================================================
+# Numerical thread limits
+# ============================================================================
+
 import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+
+# ============================================================================
+# Standard library
+# ============================================================================
+
+import argparse
 import json
-import time as _time
 import multiprocessing
+import platform
+import sys
+import time
+from datetime import datetime, timezone
+from functools import partial
+from pathlib import Path
+
+
+# ============================================================================
+# Third-party packages
+# ============================================================================
 
 import numpy as np
 import pandas as pd
 from scipy.stats import uniform
 
+from pydream.convergence import Gelman_Rubin
 from pydream.core import run_dream
 from pydream.parameters import SampledParam
-from pydream.convergence import Gelman_Rubin
 
-from forward_model_multi_station import forward_model_multi_station
-import multi_stations_input as input_data
 
-# ============================================================
-# Setup
-# ============================================================
+# ============================================================================
+# Repository imports
+# ============================================================================
 
-params = input_data.read_input()
+REPO_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parents[2]
+)
 
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(
+        0,
+        str(REPO_ROOT),
+    )
 
-np.random.seed(42)
+from avant_model.data import (
+    multi_stations_input as input_data,
+)
 
-# ============================================================
-# Files
-# ============================================================
+from avant_model.inversion.bayesian_inversion_multi_station import (
+    PHYSICAL_PARAMETER_NAMES,
+    NUISANCE_PARAMETER_NAMES,
+    SAMPLED_PARAMETER_NAMES,
+    likelihood,
+)
 
-BASE_DIR = os.path.dirname(__file__)
-STATION_FILE = os.path.join(BASE_DIR, "AVANT_stations.csv")
-OBSERVED_FILE = os.path.join(BASE_DIR, "avant_cleaned_strain.csv")
 
-# ============================================================
+# ============================================================================
+# Canonical definitions
+# ============================================================================
+
+PHYSICAL_NAMES = tuple(
+    PHYSICAL_PARAMETER_NAMES
+)
+
+NUISANCE_NAMES = tuple(
+    NUISANCE_PARAMETER_NAMES
+)
+
+PARAM_NAMES = tuple(
+    SAMPLED_PARAMETER_NAMES
+)
+
+COMPONENTS = (
+    "eXX",
+    "eYY",
+    "eZZ",
+    "eXY",
+)
+
+EXPECTED_STATIONS = (
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+)
+
+
+# ============================================================================
+# Canonical 1-Darcy transient data paths
+# ============================================================================
+
+STATION_FILE = (
+    REPO_ROOT
+    / "datasets"
+    / "comsol"
+    / "1darcy"
+    / "metadata"
+    / "stations.csv"
+)
+
+OBSERVED_FILE = (
+    REPO_ROOT
+    / "datasets"
+    / "comsol"
+    / "1darcy"
+    / "processed"
+    / "strain.csv"
+)
+
+
+# ============================================================================
+# Output configuration
+# ============================================================================
+
+DEFAULT_OUTPUT_ROOT = (
+    REPO_ROOT
+    / "results"
+    / "bayesian"
+    / "1darcy"
+)
+
+DEFAULT_MODEL_NAME = (
+    "pydream_1darcy_ab_h_theta_center_sigma"
+)
+
+
+# ============================================================================
+# PyDREAM defaults
+# ============================================================================
+
+DEFAULT_MAX_ITER = 50000
+DEFAULT_BATCH_SIZE = 5000
+DEFAULT_NCHAINS = 4
+DEFAULT_RHAT_THRESHOLD = 1.10
+DEFAULT_SEED = 42
+
+
+# ============================================================================
+# Command-line arguments
+# ============================================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the production PyDREAM Bayesian inversion "
+            "for the canonical AVANT 1-Darcy transient dataset."
+        )
+    )
+
+    parser.add_argument(
+        "--model-name",
+        default=DEFAULT_MODEL_NAME,
+        help=(
+            "Unique model name used for the output directory "
+            "and PyDREAM history."
+        ),
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Output directory. Default: "
+            "results/bayesian/1darcy/<model-name>"
+        ),
+    )
+
+    parser.add_argument(
+        "--max-iter",
+        type=int,
+        default=DEFAULT_MAX_ITER,
+        help="Maximum PyDREAM iterations per chain.",
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Number of iterations in each PyDREAM batch.",
+    )
+
+    parser.add_argument(
+        "--nchains",
+        type=int,
+        default=DEFAULT_NCHAINS,
+        help="Number of PyDREAM chains.",
+    )
+
+    parser.add_argument(
+        "--rhat-threshold",
+        type=float,
+        default=DEFAULT_RHAT_THRESHOLD,
+        help="Gelman-Rubin convergence threshold.",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="NumPy random seed.",
+    )
+
+    parser.add_argument(
+        "--mp-start",
+        choices=(
+            "spawn",
+            "fork",
+            "forkserver",
+        ),
+        default="spawn",
+        help="Multiprocessing start method.",
+    )
+
+    return parser.parse_args()
+
+
+# ============================================================================
+# JSON helper
+# ============================================================================
+
+def save_json(path, payload):
+    with open(
+        path,
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        json.dump(
+            payload,
+            handle,
+            indent=2,
+        )
+
+
+# ============================================================================
 # Station metadata
-# ============================================================
+# ============================================================================
 
-stations_df = pd.read_csv(STATION_FILE)
-required_cols = ["station", "x_prime", "y_prime", "depth"]
-missing = set(required_cols) - set(stations_df.columns)
-if missing:
-    raise RuntimeError(f"Missing columns in AVANT_stations.csv: {missing}")
+def load_station_metadata():
+    """
+    Load the canonical eight-station 1-Darcy metadata.
 
-stations_df["station"] = stations_df["station"].astype(str).str.strip()
-station_names = stations_df["station"].values
-x_prime = stations_df["x_prime"].values.astype(float)
-y_prime = stations_df["y_prime"].values.astype(float)
-z = stations_df["depth"].values.astype(float)
+    No fallback station-file search is permitted.
+    """
 
-Ns = len(station_names)
-print(f"[INFO] Using {Ns} AVANT stations: {station_names}")
+    if not STATION_FILE.exists():
+        raise FileNotFoundError(
+            "Canonical 1-Darcy station metadata was not found:\n"
+            f"    {STATION_FILE}"
+        )
 
-# ============================================================
-# Fixed true values from input script
-# ============================================================
+    stations = pd.read_csv(
+        STATION_FILE
+    )
 
-pmax = float(params["pmax"])
-E_fixed = float(params["E"])
-c_fixed = float(params["c_fixed"])
-nu = float(params["nu"])
-alpha = params.get("alpha", None)
-time = np.asarray(params["time"], dtype=float)
-tpeak = float(params["tpeak"])
-d = float(params["d"])
-h = float(params["h"])
-
-print(f"[INFO] Fixed inputs: pmax={pmax:.6g}, E={E_fixed:.6g}, c={c_fixed:.6g}")
-
-# ============================================================
-# Forward-model column detection
-# ============================================================
-
-def detect_component_columns():
-    """Detect whether the forward model returns new-style or legacy strain names."""
-    new_cols = [f"{comp}_{sname}" for comp in ["eXX", "eYY", "eXY", "eZZ"] for sname in station_names]
-    legacy_cols = [
-        f"{comp}_{sname}"
-        for comp in [
-            "Epsilon_XX_nanostrain",
-            "Epsilon_YY_nanostrain",
-            "Epsilon_XY_nanostrain",
-            "Epsilon_ZZ_nanostrain",
-        ]
-        for sname in station_names
+    stations.columns = [
+        str(column).strip()
+        for column in stations.columns
     ]
 
+    required_columns = {
+        "station",
+        "x",
+        "y",
+        "z",
+    }
+
+    missing = (
+        required_columns
+        - set(stations.columns)
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Canonical station metadata is missing required columns: "
+            + ", ".join(sorted(missing))
+            + f"\nFound columns: {list(stations.columns)}"
+        )
+
+    stations = stations.loc[
+        :,
+        [
+            "station",
+            "x",
+            "y",
+            "z",
+        ],
+    ].copy()
+
+    stations["station"] = (
+        stations["station"]
+        .astype(str)
+        .str.strip()
+    )
+
+    for column in (
+        "x",
+        "y",
+        "z",
+    ):
+        stations[column] = pd.to_numeric(
+            stations[column],
+            errors="raise",
+        )
+
+    actual_station_order = tuple(
+        stations["station"].tolist()
+    )
+
+    if actual_station_order != EXPECTED_STATIONS:
+        raise RuntimeError(
+            "Unexpected canonical 1-Darcy station metadata.\n"
+            f"Expected: {EXPECTED_STATIONS}\n"
+            f"Found:    {actual_station_order}"
+        )
+
+    if stations["station"].duplicated().any():
+        raise RuntimeError(
+            "Station names are duplicated."
+        )
+
+    coordinates = stations[
+        [
+            "x",
+            "y",
+            "z",
+        ]
+    ].to_numpy(
+        dtype=float
+    )
+
+    if not np.all(
+        np.isfinite(coordinates)
+    ):
+        raise RuntimeError(
+            "Station metadata contains non-finite coordinates."
+        )
+
+    return stations
+
+
+# ============================================================================
+# Observed transient dataset
+# ============================================================================
+
+def expected_component_columns():
+    """
+    Return the exact canonical 32-channel ordering.
+    """
+
+    return [
+        f"{component}_{station}"
+        for component in COMPONENTS
+        for station in EXPECTED_STATIONS
+    ]
+
+
+def load_observed_dataset():
+    """
+    Load the canonical eight-station transient strain dataset.
+
+    No alternate observed dataset is accepted.
+    """
+
+    if not OBSERVED_FILE.exists():
+        raise FileNotFoundError(
+            "Canonical 1-Darcy transient strain dataset was not found:\n"
+            f"    {OBSERVED_FILE}"
+        )
+
+    observed = pd.read_csv(
+        OBSERVED_FILE
+    )
+
+    observed.columns = [
+        str(column).strip()
+        for column in observed.columns
+    ]
+
+    expected_columns = [
+        "time_s",
+        *expected_component_columns(),
+    ]
+
+    missing = [
+        column
+        for column in expected_columns
+        if column not in observed.columns
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "The canonical transient strain dataset "
+            "is missing these required columns:\n"
+            + "\n".join(
+                f"    {column}"
+                for column in missing
+            )
+        )
+
+    unexpected = [
+        column
+        for column in observed.columns
+        if column not in expected_columns
+    ]
+
+    if unexpected:
+        raise RuntimeError(
+            "Unexpected columns found in the canonical "
+            "transient strain dataset:\n"
+            + "\n".join(
+                f"    {column}"
+                for column in unexpected
+            )
+        )
+
+    observed = observed.loc[
+        :,
+        expected_columns,
+    ].copy()
+
+    for column in expected_columns:
+        observed[column] = pd.to_numeric(
+            observed[column],
+            errors="raise",
+        )
+
+    if observed.empty:
+        raise RuntimeError(
+            "Canonical transient strain dataset is empty."
+        )
+
+    values = observed.to_numpy(
+        dtype=float
+    )
+
+    if not np.all(
+        np.isfinite(values)
+    ):
+        raise RuntimeError(
+            "Canonical transient strain dataset contains "
+            "non-finite values."
+        )
+
+    time_values = observed[
+        "time_s"
+    ].to_numpy(
+        dtype=float
+    )
+
+    if time_values.size < 2:
+        raise RuntimeError(
+            "At least two time steps are required."
+        )
+
+    if not np.all(
+        np.diff(time_values) >= 0.0
+    ):
+        raise RuntimeError(
+            "time_s must be monotonically non-decreasing."
+        )
+
+    return observed
+
+
+# ============================================================================
+# Fixed analytical-model inputs
+# ============================================================================
+
+def load_fixed_model_inputs(observed_time):
+    """
+    Load fixed analytical-model inputs.
+
+    The observed dataset supplies the authoritative time vector.
+    The existing model configuration is checked against it.
+    """
+
+    params = input_data.read_input()
+
+    required = (
+        "pmax",
+        "E",
+        "c_fixed",
+        "nu",
+        "tpeak",
+        "d",
+        "alpha",
+    )
+
+    missing = [
+        name
+        for name in required
+        if name not in params
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "multi_stations_input.read_input() is missing "
+            "required fixed Bayesian parameters:\n"
+            + "\n".join(
+                f"    {name}"
+                for name in missing
+            )
+        )
+
+    configured_time = np.asarray(
+        params.get(
+            "time",
+            [],
+        ),
+        dtype=float,
+    )
+
+    if configured_time.size:
+
+        if configured_time.shape != observed_time.shape:
+            raise RuntimeError(
+                "Configured analytical-model time vector and "
+                "observed time vector have different lengths.\n"
+                f"Configured: {configured_time.shape}\n"
+                f"Observed:   {observed_time.shape}"
+            )
+
+        if not np.allclose(
+            configured_time,
+            observed_time,
+            rtol=0.0,
+            atol=1.0e-9,
+        ):
+            raise RuntimeError(
+                "Configured analytical-model time vector does not "
+                "match the canonical transient strain dataset."
+            )
+
+    return {
+        "pmax": float(params["pmax"]),
+        "E": float(params["E"]),
+        "c": float(params["c_fixed"]),
+        "nu": float(params["nu"]),
+        "tpeak": float(params["tpeak"]),
+        "d": float(params["d"]),
+        "alpha": float(params["alpha"]),
+        "time": observed_time.copy(),
+    }
+
+
+# ============================================================================
+# Priors
+# ============================================================================
+
+def make_uniform_prior(
+    low,
+    high,
+    name,
+):
+    if not (
+        np.isfinite(low)
+        and np.isfinite(high)
+        and high > low
+    ):
+        raise ValueError(
+            f"Invalid prior bounds for {name}: "
+            f"[{low}, {high}]"
+        )
+
+    return SampledParam(
+        uniform,
+        loc=float(low),
+        scale=float(
+            high - low
+        ),
+    )
+
+
+def build_priors():
+    """
+    Current broad Bayesian-development prior set.
+
+    These ranges are retained for the first production refactor.
+    We will later move the finalized narrow/current/broad scenarios
+    into explicit configuration files.
+    """
+
+    bounds = {
+        "a": [
+            40.0,
+            900.0,
+        ],
+        "b": [
+            20.0,
+            1000.0,
+        ],
+        "h": [
+            50.0,
+            900.0,
+        ],
+        "theta_deg": [
+            -90.0,
+            90.0,
+        ],
+        "x0_prime": [
+            -900.0,
+            900.0,
+        ],
+        "y0_prime": [
+            -900.0,
+            900.0,
+        ],
+        "log10_sigma_strain": [
+            0.0,
+            np.log10(2000.0),
+        ],
+    }
+
+    priors = [
+        make_uniform_prior(
+            *bounds["a"],
+            name="a",
+        ),
+        make_uniform_prior(
+            *bounds["b"],
+            name="b",
+        ),
+        make_uniform_prior(
+            *bounds["h"],
+            name="h",
+        ),
+        make_uniform_prior(
+            *bounds["theta_deg"],
+            name="theta_deg",
+        ),
+        make_uniform_prior(
+            *bounds["x0_prime"],
+            name="x0_prime",
+        ),
+        make_uniform_prior(
+            *bounds["y0_prime"],
+            name="y0_prime",
+        ),
+        make_uniform_prior(
+            *bounds["log10_sigma_strain"],
+            name="log10_sigma_strain",
+        ),
+    ]
+
+    return priors, bounds
+
+
+# ============================================================================
+# Vector helpers
+# ============================================================================
+
+def flatten_observed_vector(
+    observed,
+    component_columns,
+):
+    return np.concatenate(
+        [
+            observed[column].to_numpy(
+                dtype=float
+            )
+            for column in component_columns
+        ]
+    )
+
+
+def normalize_sampled_params(
+    sampled_params,
+):
+    array = np.asarray(
+        sampled_params
+    )
+
+    if array.ndim == 3:
+        return [
+            np.asarray(
+                array[index],
+                dtype=float,
+            )
+            for index in range(
+                array.shape[0]
+            )
+        ]
+
+    if array.ndim == 2:
+        return [
+            np.asarray(
+                array,
+                dtype=float,
+            )
+        ]
+
+    raise RuntimeError(
+        "Unexpected PyDREAM sampled-parameter shape: "
+        f"{array.shape}"
+    )
+
+
+# ============================================================================
+# TOP-LEVEL PICKLEABLE PYDREAM LIKELIHOOD
+# ============================================================================
+
+def pydream_likelihood(
+    sampled_parameters,
+    *,
+    observed_vector,
+    time_vector,
+    x_prime,
+    y_prime,
+    z,
+    c,
+    E,
+    nu,
+    pmax,
+    tpeak,
+    d,
+    alpha,
+    component_columns,
+    station_names,
+):
+    """
+    Top-level pickleable likelihood wrapper for PyDREAM.
+
+    IMPORTANT
+    ---------
+    This function must remain at module scope.
+
+    Windows multiprocessing uses the "spawn" method by default.
+    Functions defined inside main() are local objects and cannot be
+    pickled for transfer to PyDREAM worker processes.
+    """
+
     try:
-        test_df = forward_model_multi_station(
+        return likelihood(
+            sampled_parameters,
+            observed_vector,
+            time=time_vector,
+            x_prime=x_prime,
+            y_prime=y_prime,
+            z=z,
+            c=c,
+            E=E,
+            nu=nu,
             pmax=pmax,
             tpeak=tpeak,
             d=d,
-            time=time,
-            x_prime=x_prime,
-            y_prime=y_prime,
-            x0_prime=float(params["x0_prime"]),
-            y0_prime=float(params["y0_prime"]),
-            z=z,
-            a=float(params["a_fixed"]),
-            b=float(params["b_fixed"]),
-            c=c_fixed,
-            nu=nu,
-            h=h,
-            E=E_fixed,
-            theta_deg=float(params["theta_deg"]),
             alpha=alpha,
+            component_cols=component_columns,
             station_names=station_names,
         )
-    except Exception as e:
-        print(f"[WARN] Could not probe forward-model column names: {e}")
-        return new_cols
 
-    if all(c in test_df.columns for c in new_cols):
-        return new_cols
-    if all(c in test_df.columns for c in legacy_cols):
-        return legacy_cols
-
-    raise RuntimeError(
-        "Could not detect a valid forward-model strain column convention.\n"
-        f"New-style example columns: {new_cols[:4]}\n"
-        f"Legacy-style example columns: {legacy_cols[:4]}\n"
-        f"Available forward-model columns: {list(test_df.columns)}"
-    )
-
-COMPONENT_COLS = detect_component_columns()
-print(f"[INFO] Using strain column convention: {COMPONENT_COLS[0].split('_')[0]} ...")
-
-# ============================================================
-# Observed strain data
-# ============================================================
-
-observed_df = pd.read_csv(OBSERVED_FILE)
-observed_df.columns = [str(c).strip() for c in observed_df.columns]
-
-if "time_s" not in observed_df.columns:
-    raise RuntimeError("Observed file must contain a 'time_s' column")
-
-def standardize_observed_strain(df, component_cols):
-    """Return a dataframe whose strain columns match the forward-model ordering."""
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-
-    strain_cols = [c for c in df.columns if c != "time_s"]
-
-    if all(c in df.columns for c in component_cols):
-        return df, component_cols
-
-    rename_map = {}
-    if component_cols[0].startswith("e"):
-        legacy_bases = {
-            "eXX": "Epsilon_XX_nanostrain",
-            "eYY": "Epsilon_YY_nanostrain",
-            "eXY": "Epsilon_XY_nanostrain",
-            "eZZ": "Epsilon_ZZ_nanostrain",
-        }
-        for comp in ["eXX", "eYY", "eXY", "eZZ"]:
-            for sname in station_names:
-                old = f"{legacy_bases[comp]}_{sname}"
-                new = f"{comp}_{sname}"
-                if old in df.columns and new not in df.columns:
-                    rename_map[old] = new
-    else:
-        new_bases = {
-            "Epsilon_XX_nanostrain": "eXX",
-            "Epsilon_YY_nanostrain": "eYY",
-            "Epsilon_XY_nanostrain": "eXY",
-            "Epsilon_ZZ_nanostrain": "eZZ",
-        }
-        for legacy_base, comp in new_bases.items():
-            for sname in station_names:
-                old = f"{comp}_{sname}"
-                new = f"{legacy_base}_{sname}"
-                if old in df.columns and new not in df.columns:
-                    rename_map[old] = new
-
-    if rename_map:
-        df = df.rename(columns=rename_map)
-        if all(c in df.columns for c in component_cols):
-            return df, component_cols
-
-    if len(strain_cols) == len(component_cols):
-        rename_map = {old: new for old, new in zip(strain_cols, component_cols)}
-        df = df.rename(columns=rename_map)
-        return df, component_cols
-
-    raise RuntimeError(
-        "Observed file columns do not match the expected strain layout.\n"
-        f"Expected {len(component_cols)} strain columns.\n"
-        f"Available columns: {list(df.columns)}"
-    )
-
-observed_df, COMPONENT_COLS = standardize_observed_strain(observed_df, COMPONENT_COLS)
-
-def flatten_columns(df, cols):
-    return np.concatenate([df[c].values.astype(float) for c in cols])
-
-observed_vector = flatten_columns(observed_df, COMPONENT_COLS)
-print(f"[INFO] Observed vector shape: {observed_vector.shape}")
-
-# ============================================================
-# Inclusion center (fixed true values used for the initial probe only)
-# ============================================================
-
-x0_fixed = float(params["x0_prime"])
-y0_fixed = float(params["y0_prime"])
-
-print(f"[INFO] Baseline inclusion center: x0={x0_fixed:.3f}, y0={y0_fixed:.3f}")
-
-# ============================================================
-# Likelihood wrapper
-# ============================================================
-
-# parameters = [a, b, theta_deg, x0_prime, y0_prime, log10_sigma_strain]
-
-def likelihood_wrapper(params_in):
-    a_s, b_s, theta_deg_s, x0_s, y0_s, log10_sigma_s = np.ravel(params_in)
-
-    if a_s <= 0 or b_s <= 0:
-        return -np.inf
-
-    sigma_strain = 10.0 ** log10_sigma_s
-    if sigma_strain <= 0:
-        return -np.inf
-
-    try:
-        return _gaussian_strain_likelihood(
-            a_s=a_s,
-            b_s=b_s,
-            theta_deg_s=theta_deg_s,
-            x0_s=x0_s,
-            y0_s=y0_s,
-            sigma_strain=sigma_strain,
-        )
-    except Exception as e:
-        print(f"[ERROR] Likelihood failed for params {params_in}: {e}")
-        return -np.inf
-
-
-def _gaussian_strain_likelihood(a_s, b_s, theta_deg_s, x0_s, y0_s, sigma_strain):
-    """Compute strain-only Gaussian log-likelihood for the current parameter set."""
-    df_pred = forward_model_multi_station(
-        pmax=pmax,
-        tpeak=tpeak,
-        d=d,
-        time=time,
-        x_prime=x_prime,
-        y_prime=y_prime,
-        x0_prime=x0_s,
-        y0_prime=y0_s,
-        z=z,
-        a=a_s,
-        b=b_s,
-        c=c_fixed,
-        nu=nu,
-        h=h,
-        E=E_fixed,
-        theta_deg=theta_deg_s,
-        alpha=alpha,
-        station_names=station_names,
-    )
-
-    if not all(col in df_pred.columns for col in COMPONENT_COLS):
-        missing_pred = [c for c in COMPONENT_COLS if c not in df_pred.columns]
-        raise RuntimeError(f"Forward model missing columns: {missing_pred}")
-
-    pred_vector = flatten_columns(df_pred, COMPONENT_COLS)
-    resid = observed_vector - pred_vector
-
-    # Simple IID Gaussian noise model on every strain datum.
-    # This is an effective noise term absorbing data/model mismatch.
-    n = resid.size
-    log_like = -0.5 * np.sum((resid / sigma_strain) ** 2) - n * np.log(sigma_strain) - 0.5 * n * np.log(2.0 * np.pi)
-    return log_like
-
-# ============================================================
-# Priors
-# ============================================================
-
-# Broad uniform priors. You can tighten them later if needed.
-# a, b are inferred shape parameters in meters.
-# theta_deg is in degrees.
-# x0_prime and y0_prime are in the same coordinate system as the station layout.
-# log10_sigma_strain spans a broad range in nanostrain units.
-
-a_min, a_max = 40.0, 500.0
-b_min, b_max = 20.0, 400.0
-theta_min, theta_max = -90.0, 90.0
-x0_min, x0_max = -400.0, 600.0
-y0_min, y0_max = -500.0, 500.0
-log10_sigma_min, log10_sigma_max = 0.0, np.log10(2000.0)
-
-param_priors = [
-    SampledParam(uniform, loc=a_min, scale=a_max - a_min),
-    SampledParam(uniform, loc=b_min, scale=b_max - b_min),
-    SampledParam(uniform, loc=theta_min, scale=theta_max - theta_min),
-    SampledParam(uniform, loc=x0_min, scale=x0_max - x0_min),
-    SampledParam(uniform, loc=y0_min, scale=y0_max - y0_min),
-    SampledParam(uniform, loc=log10_sigma_min, scale=log10_sigma_max - log10_sigma_min),
-]
-
-PARAM_NAMES = ["a", "b", "theta_deg", "x0_prime", "y0_prime", "log10_sigma_strain"]
-
-# ============================================================
-# Run control
-# ============================================================
-
-MAX_ITER = 50000
-BATCH_SIZE = 5000
-NCHAINS = 4
-R_HAT_THRESH = 1.1
-MODEL_NAME = "pydream_multi_station_strain_ab_theta_center_sigma"
-MP_CTX = multiprocessing.get_context("spawn")
-
-
-def normalize_sampled_params(sampled_params):
-    arr = np.asarray(sampled_params)
-    if arr.ndim == 3:
-        return [arr[i] for i in range(arr.shape[0])]
-    if arr.ndim == 2:
-        return [arr]
-    raise RuntimeError(f"Unexpected chain shape {arr.shape}")
-
-
-def compute_r2(obs, pred):
-    ss_res = np.sum((obs - pred) ** 2)
-    ss_tot = np.sum((obs - np.mean(obs)) ** 2)
-    return 1.0 - ss_res / ss_tot
-
-# ============================================================
-# Main loop
-# ============================================================
-
-def main():
-    chains_list = None
-    logps_list = []
-    total_iters = 0
-    batch_no = 0
-
-    while total_iters < MAX_ITER:
-        batch_no += 1
-        this_batch = min(BATCH_SIZE, MAX_ITER - total_iters)
-        print(f"\n[INFO] Batch {batch_no}: {this_batch} iterations")
-        t0 = _time.time()
-
-        sampled_params, logps = run_dream(
-            parameters=param_priors,
-            likelihood=likelihood_wrapper,
-            niterations=this_batch,
-            nchains=NCHAINS,
-            mp_context=MP_CTX,
-            snooker=True,
-            adapt_gamma=True,
-            save_history=True,
-            model_name=MODEL_NAME,
+    except Exception as exc:
+        print(
+            "[ERROR] Likelihood evaluation failed."
         )
 
-        batch_chains = normalize_sampled_params(sampled_params)
-        logps_list.append(np.asarray(logps).ravel())
+        print(
+            f"        parameters = {sampled_parameters}"
+        )
 
-        if chains_list is None:
-            chains_list = [ch.copy() for ch in batch_chains]
-        else:
-            for i in range(len(chains_list)):
-                chains_list[i] = np.vstack([chains_list[i], batch_chains[i]])
+        print(
+            f"        error = {exc}"
+        )
 
-        total_iters += this_batch
-        print(f"[INFO] Batch finished in {_time.time() - t0:.1f} s")
+        return -np.inf
 
-        try:
-            Rhat = Gelman_Rubin([np.asarray(ch) for ch in chains_list])
-            print("[INFO] R-hat:", np.round(Rhat, 3))
-            if np.all(Rhat < R_HAT_THRESH):
-                print("[INFO] Converged — stopping early.")
-                break
-        except Exception as e:
-            print("[WARN] R-hat failed:", e)
 
-    np.save("multi_station_sampled_params.npy", np.stack(chains_list))
-    np.save("multi_station_logps.npy", np.concatenate(logps_list))
-    print("[INFO] Posterior samples saved.")
+# ============================================================================
+# Manifest
+# ============================================================================
 
-    # ========================================================
-    # MAP summary
-    # ========================================================
-
-    samples = np.load("multi_station_sampled_params.npy")
-    logps = np.load("multi_station_logps.npy")
-
-    flat_samples = samples.reshape(-1, samples.shape[-1])
-    map_idx = int(np.argmax(logps))
-    map_params = flat_samples[map_idx]
-
-    a_map, b_map, theta_map, x0_map, y0_map, log10_sigma_map = map_params
-    sigma_map = 10.0 ** log10_sigma_map
-
-    df_pred = forward_model_multi_station(
-        pmax=pmax,
-        tpeak=tpeak,
-        d=d,
-        time=time,
-        x_prime=x_prime,
-        y_prime=y_prime,
-        x0_prime=x0_map,
-        y0_prime=y0_map,
-        z=z,
-        a=a_map,
-        b=b_map,
-        c=c_fixed,
-        nu=nu,
-        h=h,
-        E=E_fixed,
-        theta_deg=theta_map,
-        alpha=alpha,
-        station_names=station_names,
-    )
-
-    if not all(col in df_pred.columns for col in COMPONENT_COLS):
-        missing_pred = [c for c in COMPONENT_COLS if c not in df_pred.columns]
-        raise RuntimeError(f"Forward model missing columns: {missing_pred}")
-
-    pred_vector = flatten_columns(df_pred, COMPONENT_COLS)
-    strain_r2 = compute_r2(observed_vector, pred_vector)
-
-    burn_frac = 0.5
-    burn_in = int(len(flat_samples) * burn_frac)
-    posterior_burn_in = flat_samples[burn_in:]
-
-    a_std = float(np.std(posterior_burn_in[:, 0]))
-    b_std = float(np.std(posterior_burn_in[:, 1]))
-    theta_std = float(np.std(posterior_burn_in[:, 2]))
-    x0_std = float(np.std(posterior_burn_in[:, 3]))
-    y0_std = float(np.std(posterior_burn_in[:, 4]))
-    sigma_std = float(np.std(10.0 ** posterior_burn_in[:, 5]))
-
-    summary = {
-        "MAP": {
-            "a": float(a_map),
-            "b": float(b_map),
-            "theta_deg": float(theta_map),
-            "x0_prime": float(x0_map),
-            "y0_prime": float(y0_map),
-            "sigma_strain": float(sigma_map),
+def create_run_manifest(
+    *,
+    args,
+    output_dir,
+    stations,
+    observed,
+    fixed,
+    prior_bounds,
+):
+    return {
+        "created_utc": (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        ),
+        "repository_root": str(
+            REPO_ROOT
+        ),
+        "runner": str(
+            Path(__file__).resolve()
+        ),
+        "model_name": args.model_name,
+        "data_contract": {
+            "station_file": str(
+                STATION_FILE
+            ),
+            "observed_file": str(
+                OBSERVED_FILE
+            ),
+            "station_names": (
+                stations[
+                    "station"
+                ].tolist()
+            ),
+            "n_stations": int(
+                len(stations)
+            ),
+            "n_time_steps": int(
+                len(observed)
+            ),
+            "n_strain_channels": int(
+                len(observed.columns) - 1
+            ),
         },
-        "STD": {
-            "a": a_std,
-            "b": b_std,
-            "theta_deg": theta_std,
-            "x0_prime": x0_std,
-            "y0_prime": y0_std,
-            "sigma_strain": sigma_std,
+        "parameter_names": list(
+            PARAM_NAMES
+        ),
+        "physical_parameter_names": list(
+            PHYSICAL_NAMES
+        ),
+        "nuisance_parameter_names": list(
+            NUISANCE_NAMES
+        ),
+        "sampler": {
+            "name": "PyDREAM",
+            "nchains": int(
+                args.nchains
+            ),
+            "max_iter": int(
+                args.max_iter
+            ),
+            "batch_size": int(
+                args.batch_size
+            ),
+            "rhat_threshold": float(
+                args.rhat_threshold
+            ),
+            "seed": int(
+                args.seed
+            ),
+            "mp_start": args.mp_start,
         },
-        "fixed_inputs": {
-            "pmax": pmax,
-            "E": E_fixed,
-            "c": c_fixed,
-            "nu": nu,
-            "h": h,
-            "d": d,
+        "fixed_model_inputs": {
+            "pmax": fixed["pmax"],
+            "E": fixed["E"],
+            "c": fixed["c"],
+            "nu": fixed["nu"],
+            "tpeak": fixed["tpeak"],
+            "d": fixed["d"],
+            "alpha": fixed["alpha"],
         },
-        "fit": {
-            "strain_R2_MAP": float(strain_r2),
+        "priors": prior_bounds,
+        "software": {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
         },
-        "priors": {
-            "a": [a_min, a_max],
-            "b": [b_min, b_max],
-            "theta_deg": [theta_min, theta_max],
-            "x0_prime": [x0_min, x0_max],
-            "y0_prime": [y0_min, y0_max],
-            "log10_sigma_strain": [log10_sigma_min, log10_sigma_max],
-        },
-        "parameter_names": PARAM_NAMES,
+        "output_directory": str(
+            output_dir
+        ),
     }
 
-    with open("posterior_summary.json", "w") as f:
-        json.dump(summary, f, indent=4)
 
-    print("[INFO] Saved posterior_summary.json")
-    print(f"[INFO] MAP a: {a_map:.3f}, b: {b_map:.3f}")
-    print(f"[INFO] MAP theta_deg: {theta_map:.3f}")
-    print(f"[INFO] MAP x0_prime: {x0_map:.3f}, y0_prime: {y0_map:.3f}")
-    print(f"[INFO] MAP sigma_strain: {sigma_map:.3f}")
-    print(f"[INFO] Strain R^2: {strain_r2:.4f}")
+# ============================================================================
+# Main
+# ============================================================================
 
+def main():
+    args = parse_args()
+
+    # ------------------------------------------------------------------
+    # Validate run controls
+    # ------------------------------------------------------------------
+
+    if args.max_iter <= 0:
+        raise ValueError(
+            "--max-iter must be positive."
+        )
+
+    if args.batch_size <= 0:
+        raise ValueError(
+            "--batch-size must be positive."
+        )
+
+    if args.nchains < 2:
+        raise ValueError(
+            "--nchains must be at least 2."
+        )
+
+    if not (
+        1.0
+        < args.rhat_threshold
+        < 2.0
+    ):
+        raise ValueError(
+            "--rhat-threshold must be between 1 and 2."
+        )
+
+    if args.batch_size > args.max_iter:
+        args.batch_size = args.max_iter
+
+    np.random.seed(
+        args.seed
+    )
+
+    # ------------------------------------------------------------------
+    # Load canonical 1-Darcy transient inputs
+    # ------------------------------------------------------------------
+
+    stations = (
+        load_station_metadata()
+    )
+
+    observed = (
+        load_observed_dataset()
+    )
+
+    station_names = (
+        stations[
+            "station"
+        ].to_numpy(
+            dtype=str
+        )
+    )
+
+    # The metadata file uses x,y,z.
+    # These are the station coordinates supplied to the analytical
+    # forward model as x_prime, y_prime, z.
+    x_prime = (
+        stations[
+            "x"
+        ].to_numpy(
+            dtype=float
+        )
+    )
+
+    y_prime = (
+        stations[
+            "y"
+        ].to_numpy(
+            dtype=float
+        )
+    )
+
+    z = (
+        stations[
+            "z"
+        ].to_numpy(
+            dtype=float
+        )
+    )
+
+    component_columns = (
+        expected_component_columns()
+    )
+
+    observed_vector = (
+        flatten_observed_vector(
+            observed,
+            component_columns,
+        )
+    )
+
+    observed_time = (
+        observed[
+            "time_s"
+        ].to_numpy(
+            dtype=float
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Fixed analytical inputs
+    # ------------------------------------------------------------------
+
+    fixed = (
+        load_fixed_model_inputs(
+            observed_time
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Priors
+    # ------------------------------------------------------------------
+
+    priors, prior_bounds = (
+        build_priors()
+    )
+
+    # ------------------------------------------------------------------
+    # Output directory
+    # ------------------------------------------------------------------
+
+    if args.output_dir is None:
+
+        output_dir = (
+            DEFAULT_OUTPUT_ROOT
+            / args.model_name
+        )
+
+    else:
+
+        output_dir = (
+            args.output_dir
+        )
+
+    output_dir = (
+        output_dir.resolve()
+    )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Console report
+    # ------------------------------------------------------------------
+
+    print(
+        "=" * 78
+    )
+
+    print(
+        "AVANT 1-DARCY BAYESIAN PARAMETER INFERENCE"
+    )
+
+    print(
+        "=" * 78
+    )
+
+    print(
+        "\nCANONICAL TRANSIENT DATA"
+    )
+
+    print(
+        f"  station metadata:\n"
+        f"    {STATION_FILE}"
+    )
+
+    print(
+        f"  strain data:\n"
+        f"    {OBSERVED_FILE}"
+    )
+
+    print(
+        "\nSTATIONS"
+    )
+
+    print(
+        f"  count = {len(station_names)}"
+    )
+
+    print(
+        f"  names = {list(station_names)}"
+    )
+
+    print(
+        "\nTRANSIENT DATA"
+    )
+
+    print(
+        f"  time steps = {len(observed)}"
+    )
+
+    print(
+        f"  strain channels = "
+        f"{len(component_columns)}"
+    )
+
+    print(
+        f"  total observations = "
+        f"{observed_vector.size}"
+    )
+
+    print(
+        "\nPHYSICAL PARAMETERS"
+    )
+
+    for name in PHYSICAL_NAMES:
+        print(
+            f"  {name}"
+        )
+
+    print(
+        "\nSTATISTICAL NUISANCE PARAMETER"
+    )
+
+    print(
+        "  log10_sigma_strain"
+    )
+
+    print(
+        "\nFIXED ANALYTICAL-MODEL INPUTS"
+    )
+
+    for name in (
+        "pmax",
+        "E",
+        "c",
+        "nu",
+        "tpeak",
+        "d",
+        "alpha",
+    ):
+        print(
+            f"  {name:8s} = "
+            f"{fixed[name]}"
+        )
+
+    print(
+        "\nPRIORS"
+    )
+
+    for name in PARAM_NAMES:
+        print(
+            f"  {name:20s} = "
+            f"{prior_bounds[name]}"
+        )
+
+    # ------------------------------------------------------------------
+    # Save manifest
+    # ------------------------------------------------------------------
+
+    manifest = (
+        create_run_manifest(
+            args=args,
+            output_dir=output_dir,
+            stations=stations,
+            observed=observed,
+            fixed=fixed,
+            prior_bounds=prior_bounds,
+        )
+    )
+
+    save_json(
+        output_dir
+        / "run_manifest.json",
+        manifest,
+    )
+
+    stations.to_csv(
+        output_dir
+        / "station_metadata_used.csv",
+        index=False,
+    )
+
+    save_json(
+        output_dir
+        / "component_column_order.json",
+        component_columns,
+    )
+
+    # ------------------------------------------------------------------
+    # Build PICKLEABLE likelihood callable
+    # ------------------------------------------------------------------
+
+    pydream_likelihood_fn = partial(
+        pydream_likelihood,
+
+        observed_vector=(
+            observed_vector
+        ),
+
+        time_vector=(
+            fixed["time"]
+        ),
+
+        x_prime=(
+            x_prime
+        ),
+
+        y_prime=(
+            y_prime
+        ),
+
+        z=(
+            z
+        ),
+
+        c=(
+            fixed["c"]
+        ),
+
+        E=(
+            fixed["E"]
+        ),
+
+        nu=(
+            fixed["nu"]
+        ),
+
+        pmax=(
+            fixed["pmax"]
+        ),
+
+        tpeak=(
+            fixed["tpeak"]
+        ),
+
+        d=(
+            fixed["d"]
+        ),
+
+        alpha=(
+            fixed["alpha"]
+        ),
+
+        component_columns=(
+            component_columns
+        ),
+
+        station_names=(
+            station_names
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Multiprocessing
+    # ------------------------------------------------------------------
+
+    mp_context = (
+        multiprocessing.get_context(
+            args.mp_start
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Sampling state
+    # ------------------------------------------------------------------
+
+    chain_collection = None
+
+    log_probability_collection = []
+
+    total_iterations = 0
+
+    batch_number = 0
+
+    convergence_history = []
+
+    converged = False
+    convergence_iteration = None
+    final_rhat = None
+
+    print(
+        "\n"
+        + "=" * 78
+    )
+
+    print(
+        "PYDREAM SAMPLING"
+    )
+
+    print(
+        "=" * 78
+    )
+
+    # ------------------------------------------------------------------
+    # PyDREAM loop
+    # ------------------------------------------------------------------
+
+    while (
+        total_iterations
+        < args.max_iter
+    ):
+
+        batch_number += 1
+
+        batch_iterations = min(
+            args.batch_size,
+            args.max_iter
+            - total_iterations,
+        )
+
+        print(
+            f"\n[INFO] Batch {batch_number}: "
+            f"{batch_iterations} iterations"
+        )
+
+        start_time = time.time()
+
+        sampled_params, logps = (
+            run_dream(
+                parameters=priors,
+
+                likelihood=(
+                    pydream_likelihood_fn
+                ),
+
+                niterations=(
+                    batch_iterations
+                ),
+
+                nchains=(
+                    args.nchains
+                ),
+
+                mp_context=(
+                    mp_context
+                ),
+
+                snooker=True,
+
+                adapt_gamma=True,
+
+                save_history=True,
+
+                model_name=(
+                    f"{args.model_name}"
+                    f"_batch{batch_number:03d}"
+                ),
+            )
+        )
+
+        batch_chains = (
+            normalize_sampled_params(
+                sampled_params
+            )
+        )
+
+        if len(batch_chains) != (
+            args.nchains
+        ):
+            raise RuntimeError(
+                "PyDREAM returned "
+                f"{len(batch_chains)} chains, "
+                f"expected {args.nchains}."
+            )
+
+        if chain_collection is None:
+
+            chain_collection = [
+                chain.copy()
+                for chain in batch_chains
+            ]
+
+        else:
+
+            for chain_index in range(
+                args.nchains
+            ):
+
+                chain_collection[
+                    chain_index
+                ] = np.vstack(
+                    [
+                        chain_collection[
+                            chain_index
+                        ],
+                        batch_chains[
+                            chain_index
+                        ],
+                    ]
+                )
+
+        log_probability_collection.append(
+            np.asarray(
+                logps,
+                dtype=float,
+            ).ravel()
+        )
+
+        total_iterations += (
+            batch_iterations
+        )
+
+        print(
+            f"[INFO] Batch finished in "
+            f"{time.time() - start_time:.2f} s"
+        )
+
+        # --------------------------------------------------------------
+        # Gelman-Rubin
+        # --------------------------------------------------------------
+
+        try:
+
+            rhat = np.asarray(
+                Gelman_Rubin(
+                    [
+                        np.asarray(
+                            chain,
+                            dtype=float,
+                        )
+                        for chain in (
+                            chain_collection
+                        )
+                    ]
+                ),
+                dtype=float,
+            )
+
+            print(
+                "[INFO] R-hat =",
+                np.round(
+                    rhat,
+                    4,
+                ),
+            )
+
+            convergence_entry = {
+                "batch": int(
+                    batch_number
+                ),
+                "total_iterations": int(
+                    total_iterations
+                ),
+                "rhat": [
+                    float(value)
+                    for value in rhat
+                ],
+                "all_below_threshold": bool(
+                    np.all(
+                        rhat
+                        < args.rhat_threshold
+                    )
+                ),
+            }
+
+            convergence_history.append(
+                convergence_entry
+            )
+
+            if convergence_entry[
+                "all_below_threshold"
+            ]:
+
+                converged = True
+                convergence_iteration = total_iterations
+                final_rhat = rhat.copy()
+
+                print(
+                    "[INFO] Gelman-Rubin convergence criterion reached."
+                )
+                print(
+                    f"[INFO] Converged after {total_iterations} iterations per chain."
+                )
+
+                break
+
+        except Exception as exc:
+
+            print(
+                "[WARN] Gelman-Rubin calculation failed:"
+            )
+
+            print(
+                f"       {exc}"
+            )
+
+            convergence_history.append(
+                {
+                    "batch": int(
+                        batch_number
+                    ),
+                    "total_iterations": int(
+                        total_iterations
+                    ),
+                    "rhat": None,
+                    "all_below_threshold": False,
+                    "error": str(exc),
+                }
+            )
+
+    # ------------------------------------------------------------------
+    # Final chain validation
+    # ------------------------------------------------------------------
+
+    if chain_collection is None:
+
+        raise RuntimeError(
+            "No posterior chains were returned."
+        )
+
+    if len(chain_collection) != (
+        args.nchains
+    ):
+
+        raise RuntimeError(
+            "Final chain count does not match "
+            "requested nchains."
+        )
+
+    posterior_chains = np.stack(
+        chain_collection,
+        axis=0,
+    )
+
+    posterior_logps = (
+        np.concatenate(
+            log_probability_collection
+        )
+    )
+
+    flat_samples = (
+        posterior_chains.reshape(
+            -1,
+            posterior_chains.shape[-1],
+        )
+    )
+
+    if flat_samples.shape[1] != (
+        len(PARAM_NAMES)
+    ):
+
+        raise RuntimeError(
+            "Posterior dimensionality mismatch.\n"
+            f"Expected: {len(PARAM_NAMES)}\n"
+            f"Received: {flat_samples.shape[1]}\n"
+            f"Parameters: {PARAM_NAMES}"
+        )
+
+    if posterior_logps.size != (
+        flat_samples.shape[0]
+    ):
+
+        raise RuntimeError(
+            "Posterior log-probability count does not "
+            "match flattened posterior samples."
+        )
+
+    # ------------------------------------------------------------------
+    # Save arrays
+    # ------------------------------------------------------------------
+
+    np.save(
+        output_dir
+        / "posterior_chains.npy",
+        posterior_chains,
+    )
+
+    np.save(
+        output_dir
+        / "posterior_logps.npy",
+        posterior_logps,
+    )
+
+    np.save(
+        output_dir
+        / "posterior_samples_flat.npy",
+        flat_samples,
+    )
+
+    save_json(
+        output_dir
+        / "convergence_history.json",
+        convergence_history,
+    )
+
+    # ------------------------------------------------------------------
+    # MAP estimate
+    # ------------------------------------------------------------------
+
+    map_index = int(
+        np.argmax(
+            posterior_logps
+        )
+    )
+
+    map_vector = (
+        flat_samples[
+            map_index
+        ]
+    )
+
+    map_record = {
+        name: float(value)
+        for name, value in zip(
+            PARAM_NAMES,
+            map_vector,
+        )
+    }
+
+    map_record[
+        "sigma_strain"
+    ] = float(
+        10.0
+        ** map_record[
+            "log10_sigma_strain"
+        ]
+    )
+
+    # ------------------------------------------------------------------
+    # Basic posterior moments
+    # ------------------------------------------------------------------
+
+    posterior_mean = {
+        name: float(
+            np.mean(
+                flat_samples[
+                    :,
+                    index,
+                ]
+            )
+        )
+        for index, name in enumerate(
+            PARAM_NAMES
+        )
+    }
+
+    posterior_std = {
+        name: float(
+            np.std(
+                flat_samples[
+                    :,
+                    index,
+                ],
+                ddof=1,
+            )
+        )
+        for index, name in enumerate(
+            PARAM_NAMES
+        )
+    }
+
+    sigma_index = PARAM_NAMES.index(
+        "log10_sigma_strain"
+    )
+
+    sigma_samples = (
+        10.0
+        ** flat_samples[
+            :,
+            sigma_index,
+        ]
+    )
+
+    posterior_mean[
+        "sigma_strain"
+    ] = float(
+        np.mean(
+            sigma_samples
+        )
+    )
+
+    posterior_std[
+        "sigma_strain"
+    ] = float(
+        np.std(
+            sigma_samples,
+            ddof=1,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+
+    summary = {
+        "parameter_names": list(
+            PARAM_NAMES
+        ),
+        "physical_parameter_names": list(
+            PHYSICAL_NAMES
+        ),
+        "nuisance_parameter_names": list(
+            NUISANCE_NAMES
+        ),
+        "n_chains": int(
+            posterior_chains.shape[0]
+        ),
+        "iterations_per_chain": int(
+            posterior_chains.shape[1]
+        ),
+        "total_flat_samples": int(
+            flat_samples.shape[0]
+        ),
+        "map": map_record,
+        "posterior_mean": posterior_mean,
+        "posterior_std": posterior_std,
+        "fixed_model_inputs": {
+            "pmax": fixed["pmax"],
+            "E": fixed["E"],
+            "c": fixed["c"],
+            "nu": fixed["nu"],
+            "tpeak": fixed["tpeak"],
+            "d": fixed["d"],
+            "alpha": fixed["alpha"],
+        },
+        "prior_bounds": prior_bounds,
+        "run_status": (
+            "converged"
+            if converged
+            else "not_converged"
+        ),
+        "convergence": {
+            "status": (
+                "converged"
+                if converged
+                else "not_converged"
+            ),
+            "criterion": "all_rhat_below_threshold",
+            "threshold": float(
+                args.rhat_threshold
+            ),
+            "converged": bool(
+                converged
+            ),
+            "convergence_iterations_per_chain": (
+                int(convergence_iteration)
+                if convergence_iteration is not None
+                else None
+            ),
+            "final_rhat": (
+                [
+                    float(value)
+                    for value in final_rhat
+                ]
+                if final_rhat is not None
+                else (
+                    convergence_history[-1]["rhat"]
+                    if (
+                        convergence_history
+                        and convergence_history[-1]["rhat"] is not None
+                    )
+                    else None
+                )
+            ),
+        },
+    }
+
+    save_json(
+        output_dir
+        / "posterior_run_summary.json",
+        summary,
+    )
+
+    # ------------------------------------------------------------------
+    # Final report
+    # ------------------------------------------------------------------
+
+    print(
+        "\n"
+        + "=" * 78
+    )
+
+    if converged:
+        print(
+            "BAYESIAN INVERSION CONVERGED"
+        )
+    else:
+        print(
+            "BAYESIAN SAMPLING COMPLETE - NOT CONVERGED"
+        )
+
+    print(
+        "=" * 78
+    )
+
+    print(
+        f"\nOutput directory:\n"
+        f"    {output_dir}"
+    )
+
+    print(
+        "\nConvergence status:"
+    )
+
+    if converged:
+        print(
+            "    CONVERGED"
+        )
+        print(
+            f"    iterations/chain = {convergence_iteration}"
+        )
+    else:
+        print(
+            "    NOT CONVERGED"
+        )
+        print(
+            f"    maximum iterations reached = {total_iterations}"
+        )
+
+    print(
+        f"    R-hat threshold = {args.rhat_threshold}"
+    )
+
+    if final_rhat is not None:
+        print(
+            "    final R-hat = "
+            + np.array2string(
+                np.asarray(final_rhat),
+                precision=4,
+                separator=", ",
+            )
+        )
+    elif convergence_history:
+        last_rhat = convergence_history[-1].get("rhat")
+        if last_rhat is not None:
+            print(
+                "    final R-hat = "
+                + np.array2string(
+                    np.asarray(last_rhat),
+                    precision=4,
+                    separator=", ",
+                )
+            )
+
+    print(
+        "\nPosterior dimensions:"
+    )
+
+    print(
+        f"    chains             = "
+        f"{posterior_chains.shape[0]}"
+    )
+
+    print(
+        f"    iterations/chain   = "
+        f"{posterior_chains.shape[1]}"
+    )
+
+    print(
+        f"    total samples      = "
+        f"{flat_samples.shape[0]}"
+    )
+
+    print(
+        "\nMAP:"
+    )
+
+    for name in PARAM_NAMES:
+
+        print(
+            f"    {name:22s} = "
+            f"{map_record[name]:.8g}"
+        )
+
+    print(
+        f"    {'sigma_strain':22s} = "
+        f"{map_record['sigma_strain']:.8g} nstrain"
+    )
+
+
+# ============================================================================
+# Entry point
+# ============================================================================
 
 if __name__ == "__main__":
+
     multiprocessing.freeze_support()
+
     main()

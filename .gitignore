@@ -1,19 +1,63 @@
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environments / editors / OS
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scientific binary outputs
+*.npy
+*.npz
 *.h5
+*.hdf5
 *.ckpt
 
-# Generated images
+# Generated analysis outputs
+results/
+plots/
+logs/
+checkpoints/
+
+# PyDREAM generated state
+*_DREAM_chain_history.npy
+*_DREAM_chain_adapted_crossoverprob.npy
+*_DREAM_chain_adapted_gammalevelprob.npy
+
+# Generated figures
 *.png
+*.pdf
 
 # Keep documentation assets
 !assets/
 !assets/*.png
+!assets/*.pdf
 
-*.npy
-*.ipynb_checkpoints/
-*.egg-info/
-logs/
-checkpoints/
-
-# Temporary repository inventory
+# Temporary repository inventories
 repo_tree.txt
+repo_tree_*.txt
+tracked_files.txt
+tracked_files_*.txt
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# Local research history / legacy development artifacts
+archive/
+
+# Legacy/local 1-Darcy reference inputs not used by production workflow
+datasets/comsol/1darcy/raw/Avant Strain steady.txt
+datasets/comsol/1darcy/ww29_p_Pa.txt
