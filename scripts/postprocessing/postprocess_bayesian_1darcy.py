@@ -158,8 +158,19 @@ PARAMETER_LABELS = {
     "theta_deg": r"$\theta$ (deg)",
     "x0_prime": r"$x_0'$ (m)",
     "y0_prime": r"$y_0'$ (m)",
-    "log10_sigma_strain": r"$\log_{10}\sigma_\mathrm{strain}$",
+    "log10_sigma_strain": r"$\log_{10}\sigma_{\mathrm{strain}}$",
+    "sigma_strain": r"$\sigma_{\mathrm{strain}}$ (n$\varepsilon$)",
 }
+
+PLOT_PARAMETER_NAMES = (
+    "a",
+    "b",
+    "theta_deg",
+    "x0_prime",
+    "y0_prime",
+    "sigma_strain",
+)
+
 
 OBSERVED_LABEL = "Observed"
 MAP_LABEL_SUFFIX = "MAP analytical"
@@ -421,18 +432,26 @@ def load_run(run_dir: Path) -> dict:
             f"Expected {expected_total_logps} values, received {logps.size}."
         )
 
+    parameterization = manifest.get(
+        "parameterization",
+        {},
+    )
+
     manifest_parameter_names = tuple(
-        manifest.get("parameter_names", [])
+        parameterization.get(
+            "canonical_parameter_names",
+         [],
+        )
     )
 
     if manifest_parameter_names != PARAMETER_NAMES:
         raise RuntimeError(
-            "Run manifest parameter ordering does not match the canonical "
-            "production Bayesian state.\n"
+            "Run manifest canonical parameter ordering does not match "
+            "the AVANT post-processing contract.\n"
             f"Expected: {PARAMETER_NAMES}\n"
             f"Found:    {manifest_parameter_names}"
         )
-
+    
     return {
         "run_dir": run_dir,
         "manifest": manifest,
@@ -975,20 +994,15 @@ def posterior_summary_dataframe(
 def posterior_correlation_dataframe(
     posterior: np.ndarray,
 ) -> pd.DataFrame:
-    dataframe = pd.DataFrame(
-        posterior,
-        columns=PARAMETER_NAMES,
-    )
-
-    # Add sigma in physical nstrain units as a separate interpretable
-    # quantity while keeping the sampled log parameter in the matrix.
-    dataframe["sigma_strain"] = (
-        10.0
-        ** dataframe[
-            "log10_sigma_strain"
-        ]
-    )
-
+    """Return correlations for scientifically independent interpreted variables."""
+    dataframe = pd.DataFrame({
+        "a": posterior[:, PARAMETER_NAMES.index("a")],
+        "b": posterior[:, PARAMETER_NAMES.index("b")],
+        "theta_deg": posterior[:, PARAMETER_NAMES.index("theta_deg")],
+        "x0_prime": posterior[:, PARAMETER_NAMES.index("x0_prime")],
+        "y0_prime": posterior[:, PARAMETER_NAMES.index("y0_prime")],
+        "sigma_strain": 10.0 ** posterior[:, PARAMETER_NAMES.index("log10_sigma_strain")],
+    })
     return dataframe.corr()
 
 
@@ -998,92 +1012,130 @@ def posterior_correlation_dataframe(
 
 
 def configure_publication_style() -> None:
-    plt.rcParams.update(
-        {
-            "font.family": "DejaVu Sans",
-            "font.size": 12,
-            "axes.labelsize": 13,
-            "axes.titlesize": 14,
-            "xtick.labelsize": 11,
-            "ytick.labelsize": 11,
-            "legend.fontsize": 10,
-            "axes.linewidth": 1.2,
-            "figure.dpi": 150,
-            "savefig.dpi": 400,
-            "savefig.bbox": "tight",
-            "savefig.pad_inches": 0.08,
-        }
-    )
+    """Configure a clean, bold, symposium/manuscript plotting style."""
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "font.size": 13.5,
+        "axes.labelsize": 15.0,
+        "axes.titlesize": 16.0,
+        "axes.titleweight": "bold",
+        "axes.labelweight": "bold",
+        "xtick.labelsize": 12.5,
+        "ytick.labelsize": 12.5,
+        "legend.fontsize": 11.5,
+        "legend.frameon": False,
+        "axes.linewidth": 1.5,
+        "xtick.major.width": 1.25,
+        "ytick.major.width": 1.25,
+        "xtick.major.size": 5.5,
+        "ytick.major.size": 5.5,
+        "figure.dpi": 160,
+        "savefig.dpi": 600,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.08,
+    })
+
+
+def save_figure(fig, output_path: Path) -> None:
+    """Save both high-resolution PNG and vector PDF."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=600)
+    fig.savefig(output_path.with_suffix(".pdf"))
+
+
+def _physical_series_from_chains(chains: np.ndarray, name: str) -> np.ndarray:
+    """Return a (nchains, niterations) physical parameter series."""
+    index = PARAMETER_NAMES.index(name)
+    if name == "log10_sigma_strain":
+        return 10.0 ** chains[:, :, index]
+    return chains[:, :, index]
+
+
+def _physical_values(posterior: np.ndarray, name: str) -> np.ndarray:
+    index = PARAMETER_NAMES.index(name)
+    if name == "log10_sigma_strain":
+        return 10.0 ** posterior[:, index]
+    return posterior[:, index]
 
 
 def plot_traces(
     chains: np.ndarray,
     output_path: Path,
 ) -> None:
-    n_chains, n_iterations, _ = (
-        chains.shape
+    """Plot traces for the six scientifically interpreted parameters."""
+    n_chains, n_iterations, _ = chains.shape
+    names = (
+        "a",
+        "b",
+        "theta_deg",
+        "x0_prime",
+        "y0_prime",
+        "log10_sigma_strain",
     )
 
     fig, axes = plt.subplots(
-        len(PARAMETER_NAMES),
-        1,
-        figsize=(
-            11,
-            1.9 * len(PARAMETER_NAMES),
-        ),
+        3,
+        2,
+        figsize=(13.5, 11.0),
         sharex=True,
     )
+    axes = axes.ravel()
 
-    if len(PARAMETER_NAMES) == 1:
-        axes = [axes]
+    for panel_index, name in enumerate(names):
+        ax = axes[panel_index]
+        values = _physical_series_from_chains(chains, name)
 
-    for index, name in enumerate(
-        PARAMETER_NAMES
-    ):
-        ax = axes[index]
-
-        for chain_index in range(
-            n_chains
-        ):
+        for chain_index in range(n_chains):
             ax.plot(
-                np.arange(
-                    n_iterations
-                ),
-                chains[
-                    chain_index,
-                    :,
-                    index,
-                ],
-                linewidth=0.8,
-                alpha=0.65,
+                np.arange(n_iterations),
+                values[chain_index],
+                linewidth=1.0,
+                alpha=0.75,
             )
 
-        ax.set_ylabel(
-            PARAMETER_LABELS[name]
-        )
-        ax.grid(
-            True,
-            alpha=0.20,
-            linestyle="--",
+        label = PARAMETER_LABELS[
+            "sigma_strain" if name == "log10_sigma_strain" else name
+        ]
+        ax.set_ylabel(label, fontweight="bold")
+        ax.grid(True, alpha=0.16, linestyle="--")
+        ax.tick_params(direction="out")
+        ax.set_title(
+            label,
+            fontweight="bold",
+            pad=8,
         )
 
-    axes[-1].set_xlabel(
-        "Iteration"
+    axes[-2].set_xlabel("Iteration", fontweight="bold")
+    axes[-1].set_xlabel("Iteration", fontweight="bold")
+
+    handles = [
+        Line2D([0], [0], linewidth=1.2, label=f"Chain {i + 1}")
+        for i in range(n_chains)
+    ]
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.005),
+        ncol=min(n_chains, 4),
+        frameon=False,
     )
 
     fig.suptitle(
-        "PyDREAM parameter traces",
-        y=0.995,
+        "Bayesian posterior traces",
+        fontsize=19,
+        fontweight="bold",
+        y=0.985,
     )
-
-    fig.tight_layout(
-        rect=[0, 0, 1, 0.99]
+    fig.subplots_adjust(
+        left=0.08,
+        right=0.985,
+        bottom=0.09,
+        top=0.93,
+        hspace=0.34,
+        wspace=0.22,
     )
-
-    fig.savefig(
-        output_path
-    )
-
+    save_figure(fig, output_path)
     plt.close(fig)
 
 
@@ -1092,229 +1144,283 @@ def plot_posterior_distributions(
     map_sample_vector: np.ndarray,
     output_path: Path,
 ) -> None:
+    """
+    Create the publication/symposium-style 3x2 posterior distribution figure.
+
+    Statistical markers:
+        mean   = red dashed
+        median = green dash-dot
+        MAP    = purple dotted
+
+    The six plotted physical quantities are:
+        a
+        b
+        theta
+        x0'
+        y0'
+        sigma_strain
+    """
+
+    names = PLOT_PARAMETER_NAMES
+
     fig, axes = plt.subplots(
+        2,
         3,
-        3,
-        figsize=(15, 11),
+        figsize=(14.8, 8.8),
+        squeeze=False,
     )
 
     axes = axes.ravel()
 
-    for index, name in enumerate(
-        PARAMETER_NAMES
-    ):
+    # ------------------------------------------------------------------
+    # Statistical marker colors
+    # ------------------------------------------------------------------
 
-        values = posterior[
-            :,
-            index,
-        ]
+    mean_color = "#d62728"      # red
+    median_color = "#2ca02c"    # green
+    map_color = "#9467bd"       # purple
 
-        ax = axes[index]
+    # ------------------------------------------------------------------
+    # Shared legend
+    # ------------------------------------------------------------------
 
-        ax.hist(
-            values,
-            bins=50,
-            density=True,
-            alpha=0.65,
-            edgecolor="black",
-            linewidth=0.5,
+    legend_handles = [
+        Patch(
+            facecolor="0.65",
+            edgecolor="none",
+            alpha=0.18,
+            label="95% credible interval",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=mean_color,
+            linestyle="--",
+            linewidth=2.2,
+            label="Posterior mean",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=median_color,
+            linestyle="-.",
+            linewidth=2.2,
+            label="Posterior median",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=map_color,
+            linestyle=":",
+            linewidth=2.7,
+            label="MAP",
+        ),
+    ]
+
+    # ------------------------------------------------------------------
+    # Panels
+    # ------------------------------------------------------------------
+
+    for panel_index, name in enumerate(names):
+
+        ax = axes[panel_index]
+
+        # --------------------------------------------------------------
+        # Physical posterior values
+        # --------------------------------------------------------------
+
+        if name == "sigma_strain":
+
+            values = _physical_values(
+                posterior,
+                "log10_sigma_strain",
+            )
+
+            map_value = float(
+                10.0
+                ** map_sample_vector[
+                    PARAMETER_NAMES.index(
+                        "log10_sigma_strain"
+                    )
+                ]
+            )
+
+            xlabel = PARAMETER_LABELS[
+                "sigma_strain"
+            ]
+
+        else:
+
+            values = _physical_values(
+                posterior,
+                name,
+            )
+
+            map_value = float(
+                map_sample_vector[
+                    PARAMETER_NAMES.index(name)
+                ]
+            )
+
+            xlabel = PARAMETER_LABELS[name]
+
+        mean_value = float(
+            np.mean(values)
         )
 
-        median = np.median(
-            values
+        median_value = float(
+            np.median(values)
         )
 
-        q02_5, q97_5 = np.percentile(
+        q025, q975 = np.percentile(
             values,
             [2.5, 97.5],
         )
 
-        mean = np.mean(
-            values
+        # --------------------------------------------------------------
+        # Histogram
+        # --------------------------------------------------------------
+
+        ax.hist(
+            values,
+            bins=35,
+            density=True,
+            alpha=0.72,
+            edgecolor="black",
+            linewidth=0.65,
+            zorder=2,
         )
 
-        map_value = (
-            map_sample_vector[index]
-        )
+        # --------------------------------------------------------------
+        # 95% credible interval
+        # --------------------------------------------------------------
 
         ax.axvspan(
-            q02_5,
-            q97_5,
-            alpha=0.12,
-            label="95% credible interval",
+            q025,
+            q975,
+            facecolor="0.65",
+            alpha=0.16,
+            edgecolor="none",
+            zorder=0,
         )
 
+        # --------------------------------------------------------------
+        # Posterior mean
+        # --------------------------------------------------------------
+
         ax.axvline(
-            mean,
+            mean_value,
+            color=mean_color,
             linestyle="--",
-            linewidth=1.8,
-            label="Posterior mean",
+            linewidth=2.2,
+            zorder=5,
         )
 
+        # --------------------------------------------------------------
+        # Posterior median
+        # --------------------------------------------------------------
+
         ax.axvline(
-            median,
+            median_value,
+            color=median_color,
             linestyle="-.",
-            linewidth=1.5,
-            label="Posterior median",
+            linewidth=2.2,
+            zorder=5,
         )
+
+        # --------------------------------------------------------------
+        # MAP
+        # --------------------------------------------------------------
 
         ax.axvline(
             map_value,
+            color=map_color,
             linestyle=":",
-            linewidth=2.0,
-            label="MAP",
+            linewidth=2.7,
+            zorder=6,
         )
 
+        # --------------------------------------------------------------
+        # Labels and styling
+        # --------------------------------------------------------------
+
         ax.set_xlabel(
-            PARAMETER_LABELS[name]
+            xlabel,
+            fontweight="bold",
         )
 
         ax.set_ylabel(
-            "Density"
+            "Posterior density",
+            fontweight="bold",
+        )
+
+        ax.set_title(
+            xlabel,
+            fontweight="bold",
+            fontsize=17,
+            pad=8,
         )
 
         ax.grid(
             True,
-            alpha=0.20,
+            axis="y",
+            alpha=0.16,
             linestyle="--",
         )
 
-    # Physical sigma in the last panel.
-    sigma_index = (
-        PARAMETER_NAMES.index(
-            "log10_sigma_strain"
-        )
-    )
-
-    sigma_values = (
-        10.0
-        ** posterior[
-            :,
-            sigma_index,
-        ]
-    )
-
-    ax = axes[
-        sigma_index
-    ]
-
-    ax.clear()
-
-    sigma_map = (
-        10.0
-        ** map_sample_vector[
-            sigma_index
-        ]
-    )
-
-    sigma_mean = (
-        np.mean(
-            sigma_values
-        )
-    )
-
-    sigma_median = (
-        np.median(
-            sigma_values
-        )
-    )
-
-    sigma_q02_5, sigma_q97_5 = (
-        np.percentile(
-            sigma_values,
-            [2.5, 97.5],
-        )
-    )
-
-    ax.hist(
-        sigma_values,
-        bins=50,
-        density=True,
-        alpha=0.65,
-        edgecolor="black",
-        linewidth=0.5,
-    )
-
-    ax.axvspan(
-        sigma_q02_5,
-        sigma_q97_5,
-        alpha=0.12,
-        label="95% credible interval",
-    )
-
-    ax.axvline(
-        sigma_mean,
-        linestyle="--",
-        linewidth=1.8,
-        label="Posterior mean",
-    )
-
-    ax.axvline(
-        sigma_median,
-        linestyle="-.",
-        linewidth=1.5,
-        label="Posterior median",
-    )
-
-    ax.axvline(
-        sigma_map,
-        linestyle=":",
-        linewidth=2.0,
-        label="MAP",
-    )
-
-    ax.set_xlabel(
-        r"$\sigma_{\mathrm{strain}}$ (n$\varepsilon$)"
-    )
-
-    ax.set_ylabel(
-        "Density"
-    )
-
-    ax.grid(
-        True,
-        alpha=0.20,
-        linestyle="--",
-    )
-
-    # Remove unused panels.
-    for index in range(
-        len(PARAMETER_NAMES),
-        len(axes),
-    ):
-        axes[index].axis(
-            "off"
+        ax.tick_params(
+            direction="out",
+            width=1.3,
+            length=5.5,
         )
 
-    handles, labels = (
-        axes[0].get_legend_handles_labels()
-    )
+        # Make all four borders visibly strong.
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.5)
 
-    fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        bbox_to_anchor=(
-            0.5,
-            0.01,
-        ),
-        ncol=4,
-        frameon=False,
-    )
+    # ------------------------------------------------------------------
+    # Figure title
+    # ------------------------------------------------------------------
 
     fig.suptitle(
-        "Posterior parameter distributions",
-        y=0.99,
+        "Posterior distributions of inferred AVANT parameters",
+        fontsize=21,
+        fontweight="bold",
+        y=0.985,
     )
+
+    # ------------------------------------------------------------------
+    # Shared legend below all six panels
+    # ------------------------------------------------------------------
+
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.012),
+        ncol=4,
+        frameon=False,
+        columnspacing=2.0,
+        handlelength=3.0,
+        handletextpad=0.7,
+        fontsize=11.5,
+    )
+
+    # ------------------------------------------------------------------
+    # Layout
+    # ------------------------------------------------------------------
 
     fig.subplots_adjust(
-        bottom=0.11,
-        top=0.93,
-        hspace=0.38,
+        left=0.065,
+        right=0.985,
+        bottom=0.13,
+        top=0.90,
+        hspace=0.34,
+        wspace=0.25,
     )
 
-    fig.savefig(
-        output_path
+    save_figure(
+        fig,
+        output_path,
     )
 
     plt.close(fig)
@@ -1324,23 +1430,18 @@ def plot_correlation_matrix(
     correlation: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    matrix = correlation.to_numpy(
-        dtype=float
-    )
-
+    matrix = correlation.to_numpy(dtype=float)
     labels = [
         r"$a$",
         r"$b$",
-        r"$h$",
         r"$\theta$",
         r"$x_0'$",
         r"$y_0'$",
-        r"$\log_{10}\sigma$",
         r"$\sigma$",
     ]
 
     fig, ax = plt.subplots(
-        figsize=(9, 8),
+        figsize=(9.8, 8.6),
     )
 
     image = ax.imshow(
@@ -1351,63 +1452,45 @@ def plot_correlation_matrix(
         interpolation="nearest",
     )
 
-    ax.set_xticks(
-        np.arange(
-            len(labels)
-        )
-    )
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels, fontsize=13, rotation=30, ha="right", fontweight="bold")
+    ax.set_yticklabels(labels, fontsize=13, fontweight="bold")
 
-    ax.set_yticks(
-        np.arange(
-            len(labels)
-        )
-    )
-
-    ax.set_xticklabels(
-        labels,
-        rotation=45,
-        ha="right",
-    )
-
-    ax.set_yticklabels(
-        labels,
-    )
-
-    for row in range(
-        matrix.shape[0]
-    ):
-        for column in range(
-            matrix.shape[1]
-        ):
+    for row in range(matrix.shape[0]):
+        for column in range(matrix.shape[1]):
             ax.text(
                 column,
                 row,
                 f"{matrix[row, column]:.2f}",
                 ha="center",
                 va="center",
-                fontsize=9,
+                fontsize=11,
+                fontweight="bold",
             )
 
     colorbar = fig.colorbar(
         image,
         ax=ax,
-        shrink=0.85,
+        fraction=0.046,
+        pad=0.04,
     )
-
     colorbar.set_label(
-        "Posterior correlation"
+        "Posterior correlation",
+        fontsize=13,
+        fontweight="bold",
     )
+    colorbar.ax.tick_params(labelsize=11)
 
     ax.set_title(
-        "Posterior parameter correlation matrix"
+        "Posterior parameter correlations",
+        fontsize=18,
+        fontweight="bold",
+        pad=14,
     )
 
     fig.tight_layout()
-
-    fig.savefig(
-        output_path
-    )
-
+    save_figure(fig, output_path)
     plt.close(fig)
 
 
@@ -1417,10 +1500,14 @@ def plot_pairwise(
     max_samples: int,
     seed: int,
 ) -> None:
-    dataframe = pd.DataFrame(
-        posterior,
-        columns=PARAMETER_NAMES,
-    )
+    dataframe = pd.DataFrame({
+        "a": posterior[:, PARAMETER_NAMES.index("a")],
+        "b": posterior[:, PARAMETER_NAMES.index("b")],
+        "theta_deg": posterior[:, PARAMETER_NAMES.index("theta_deg")],
+        "x0_prime": posterior[:, PARAMETER_NAMES.index("x0_prime")],
+        "y0_prime": posterior[:, PARAMETER_NAMES.index("y0_prime")],
+        "sigma_strain": 10.0 ** posterior[:, PARAMETER_NAMES.index("log10_sigma_strain")],
+    })
 
     if len(dataframe) > max_samples:
         dataframe = dataframe.sample(
@@ -1428,27 +1515,9 @@ def plot_pairwise(
             random_state=seed,
         )
 
-    sigma_values = (
-        10.0
-        ** dataframe[
-            "log10_sigma_strain"
-        ]
-    )
-
-    dataframe = dataframe.drop(
-        columns=[
-            "log10_sigma_strain"
-        ]
-    )
-
-    dataframe[
-        "sigma_strain"
-    ] = sigma_values.to_numpy()
-
     names = [
         "a",
         "b",
-        "h",
         "theta_deg",
         "x0_prime",
         "y0_prime",
@@ -1458,7 +1527,6 @@ def plot_pairwise(
     labels = {
         "a": r"$a$",
         "b": r"$b$",
-        "h": r"$h$",
         "theta_deg": r"$\theta$",
         "x0_prime": r"$x_0'$",
         "y0_prime": r"$y_0'$",
@@ -1466,83 +1534,68 @@ def plot_pairwise(
     }
 
     n = len(names)
-
     fig, axes = plt.subplots(
         n,
         n,
-        figsize=(15, 15),
+        figsize=(16, 16),
     )
 
     for row in range(n):
         for column in range(n):
             ax = axes[row, column]
-
-            x_values = dataframe[
-                names[column]
-            ].to_numpy()
-
-            y_values = dataframe[
-                names[row]
-            ].to_numpy()
+            x_values = dataframe[names[column]].to_numpy()
+            y_values = dataframe[names[row]].to_numpy()
 
             if row == column:
-
                 ax.hist(
                     x_values,
-                    bins=40,
+                    bins=36,
                     density=True,
-                    alpha=0.70,
+                    alpha=0.72,
                     edgecolor="black",
-                    linewidth=0.4,
+                    linewidth=0.45,
                 )
-
             else:
-
                 ax.scatter(
                     x_values,
                     y_values,
-                    s=5,
-                    alpha=0.22,
+                    s=7,
+                    alpha=0.18,
                     rasterized=True,
                 )
 
             if row == n - 1:
-                ax.set_xlabel(
-                    labels[
-                        names[column]
-                    ]
-                )
+                ax.set_xlabel(labels[names[column]], fontweight="bold")
             else:
                 ax.set_xticklabels([])
 
             if column == 0:
-                ax.set_ylabel(
-                    labels[
-                        names[row]
-                    ]
-                )
+                ax.set_ylabel(labels[names[row]], fontweight="bold")
             else:
                 ax.set_yticklabels([])
 
             ax.grid(
                 True,
-                alpha=0.12,
+                alpha=0.10,
                 linestyle="--",
             )
+            ax.tick_params(labelsize=9)
 
     fig.suptitle(
         "Posterior pairwise relationships",
+        fontsize=20,
+        fontweight="bold",
         y=0.995,
     )
-
-    fig.tight_layout(
-        rect=[0, 0, 1, 0.985]
+    fig.subplots_adjust(
+        left=0.07,
+        right=0.99,
+        bottom=0.055,
+        top=0.955,
+        wspace=0.05,
+        hspace=0.05,
     )
-
-    fig.savefig(
-        output_path
-    )
-
+    save_figure(fig, output_path)
     plt.close(fig)
 
 
@@ -1885,13 +1938,32 @@ def station_plot(
     stations: Sequence[str],
     output_path: Path,
 ) -> None:
+    """
+    Create a publication-quality 2x2 station figure.
+
+    Panels:
+        top-left     = eXX
+        top-right    = eYY
+        bottom-left  = eZZ
+        bottom-right = eXY
+
+    Visual semantics:
+        open circles          = observed data
+        solid colored line    = MAP analytical prediction
+        darker band           = 95% parameter uncertainty
+        lighter band          = 95% total predictive uncertainty
+
+    Component colors identify the strain component.
+    Band opacity identifies uncertainty type.
+    """
+
     station_index = stations.index(
         station
     )
 
-    fig, ax = plt.subplots(
-        figsize=(13.5, 8.0),
-    )
+    # ------------------------------------------------------------------
+    # Posterior uncertainty envelopes
+    # ------------------------------------------------------------------
 
     parameter_lower = np.percentile(
         parameter_ensemble,
@@ -1917,11 +1989,30 @@ def station_plot(
         axis=0,
     )
 
-    component_handles = []
+    # ------------------------------------------------------------------
+    # 2x2 layout
+    # ------------------------------------------------------------------
+
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(14.0, 10.0),
+        sharex=True,
+        squeeze=False,
+    )
+
+    axes = axes.ravel()
+
+    # ------------------------------------------------------------------
+    # Plot each strain component in its own panel
+    # ------------------------------------------------------------------
 
     for component_index, component in enumerate(
         COMPONENTS
     ):
+
+        ax = axes[component_index]
+
         color = COMPONENT_COLORS[
             component
         ]
@@ -1952,7 +2043,11 @@ def station_plot(
             )
         )
 
-        # Total predictive uncertainty: light outer envelope.
+        # --------------------------------------------------------------
+        # Total predictive uncertainty
+        # Lighter outer band.
+        # --------------------------------------------------------------
+
         ax.fill_between(
             time,
             total_lower[
@@ -1969,7 +2064,11 @@ def station_plot(
             zorder=1,
         )
 
-        # Parameter-only uncertainty: darker inner envelope.
+        # --------------------------------------------------------------
+        # Parameter uncertainty
+        # Darker inner band.
+        # --------------------------------------------------------------
+
         ax.fill_between(
             time,
             parameter_lower[
@@ -1986,137 +2085,194 @@ def station_plot(
             zorder=2,
         )
 
-        # MAP analytical forward-model prediction.
+        # --------------------------------------------------------------
+        # MAP analytical prediction
+        # --------------------------------------------------------------
+
         ax.plot(
             time,
             map_values,
             color=color,
-            linewidth=2.4,
+            linewidth=2.6,
             linestyle="-",
             zorder=4,
         )
 
-        # Observed dataset.
+        # --------------------------------------------------------------
+        # Observed data
+        # --------------------------------------------------------------
+
         ax.scatter(
             time,
             observed_values,
-            s=18,
+            s=24,
             facecolor="white",
             edgecolor=color,
-            linewidth=0.9,
+            linewidth=1.1,
             alpha=0.95,
             zorder=5,
         )
 
-        component_handles.append(
-            Line2D(
-                [0],
-                [0],
-                color=color,
-                linewidth=2.4,
-                marker="o",
-                markerfacecolor="white",
-                markeredgecolor=color,
-                markersize=5.5,
-                label=(
-                    f"{COMPONENT_LABELS[component]} "
-                    f"(observed + MAP)"
-                ),
-            )
+        # --------------------------------------------------------------
+        # Panel title
+        # --------------------------------------------------------------
+
+        ax.set_title(
+            COMPONENT_LABELS[
+                component
+            ],
+            fontsize=17,
+            fontweight="bold",
+            pad=8,
         )
 
-    uncertainty_handles = [
+        ax.set_ylabel(
+            "Strain (nε)",
+            fontsize=14,
+            fontweight="bold",
+        )
+
+        # Only bottom row gets x-axis labels.
+        if component_index >= 2:
+            ax.set_xlabel(
+                "Time (s)",
+                fontsize=14,
+                fontweight="bold",
+            )
+
+        # --------------------------------------------------------------
+        # Styling
+        # --------------------------------------------------------------
+
+        ax.grid(
+            True,
+            linestyle="--",
+            alpha=0.18,
+        )
+
+        ax.tick_params(
+            direction="out",
+            width=1.25,
+            length=5,
+            labelsize=11.5,
+        )
+
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.5)
+
+        ax.margins(
+            x=0.015,
+            y=0.08,
+        )
+
+    # ------------------------------------------------------------------
+    # Shared legend
+    # ------------------------------------------------------------------
+
+    semantic_handles = [
+        Line2D(
+            [0],
+            [0],
+            linestyle="none",
+            marker="o",
+            markerfacecolor="white",
+            markeredgecolor="black",
+            markersize=6.5,
+            markeredgewidth=1.1,
+            label="Observed",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="black",
+            linewidth=2.6,
+            linestyle="-",
+            label="MAP analytical prediction",
+        ),
         Patch(
-            facecolor="0.55",
+            facecolor="0.45",
             alpha=0.28,
             edgecolor="none",
-            label=PARAM_BAND_LABEL,
+            label="95% parameter uncertainty",
         ),
         Patch(
-            facecolor="0.55",
+            facecolor="0.45",
             alpha=0.10,
             edgecolor="none",
-            label=TOTAL_BAND_LABEL,
+            label="95% total predictive uncertainty",
         ),
     ]
 
-    handles = (
-        component_handles
-        + uncertainty_handles
-    )
-
-    labels = [
-        handle.get_label()
-        for handle in handles
-    ]
-
-    legend = ax.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(
-            0.5,
-            -0.17,
-        ),
-        ncol=2,
-        frameon=False,
-        handlelength=2.6,
-        columnspacing=1.8,
-        handletextpad=0.7,
-        borderaxespad=0.0,
-    )
-
-    for text in legend.get_texts():
-        text.set_fontsize(
-            10.5
+    component_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=COMPONENT_COLORS[
+                component
+            ],
+            linewidth=2.6,
+            label=COMPONENT_LABELS[
+                component
+            ],
         )
+        for component in COMPONENTS
+    ]
 
-    ax.set_title(
-        f"{station}: observed strain and Bayesian posterior predictive uncertainty"
+    # First legend: semantics.
+    semantic_legend = fig.legend(
+        handles=semantic_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.048),
+        ncol=4,
+        frameon=False,
+        fontsize=10.5,
+        handlelength=2.8,
+        columnspacing=1.7,
     )
 
-    ax.set_xlabel(
-        "Time (s)"
+    # Second legend: component colors.
+    component_legend = fig.legend(
+        handles=component_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.005),
+        ncol=4,
+        frameon=False,
+        fontsize=10.5,
+        handlelength=2.8,
+        columnspacing=1.7,
     )
 
-    ax.set_ylabel(
-        "Strain (nε)"
+    fig.add_artist(
+        semantic_legend
     )
 
-    ax.grid(
-        True,
-        linestyle="--",
-        alpha=0.20,
+    # ------------------------------------------------------------------
+    # Overall station title
+    # ------------------------------------------------------------------
+
+    fig.suptitle(
+        f"{station}: observed strain and Bayesian posterior predictive uncertainty",
+        fontsize=19,
+        fontweight="bold",
+        y=0.985,
     )
 
-    ax.tick_params(
-        direction="out",
-        length=5,
-    )
-
-    ax.margins(
-        x=0.015,
-        y=0.08,
-    )
+    # ------------------------------------------------------------------
+    # Layout
+    # ------------------------------------------------------------------
 
     fig.subplots_adjust(
-        bottom=0.25,
-        left=0.09,
-        right=0.98,
+        left=0.075,
+        right=0.985,
+        bottom=0.16,
         top=0.90,
+        hspace=0.28,
+        wspace=0.20,
     )
 
-    fig.savefig(
-        output_path
-    )
-
-    # Also provide a vector PDF for manuscripts/posters.
-    pdf_path = output_path.with_suffix(
-        ".pdf"
-    )
-
-    fig.savefig(
-        pdf_path,
+    save_figure(
+        fig,
+        output_path,
     )
 
     plt.close(fig)
@@ -2382,6 +2538,52 @@ def main() -> None:
     logps = run[
         "logps"
     ]
+
+    # Validate constrained-run metadata when available.
+    parameterization = run["manifest"].get(
+        "parameterization",
+        {},
+    )
+
+    fixed_parameters = parameterization.get(
+        "fixed_parameters",
+        {},
+    )
+
+    if "h" in fixed_parameters:
+        fixed_h = float(fixed_parameters["h"])
+        h_index = PARAMETER_NAMES.index("h")
+
+        if not np.allclose(
+            chains[:, :, h_index],
+            fixed_h,
+            rtol=0.0,
+            atol=0.0,
+        ):
+            raise RuntimeError(
+                "Saved constrained-run posterior contains h values that "
+                "do not equal the fixed depth recorded in the run manifest."
+            )
+
+    geometric_constraints = parameterization.get(
+        "geometric_constraints",
+        {},
+    )
+
+    if geometric_constraints.get(
+        "b_greater_than_a",
+        False,
+    ):
+        a_index = PARAMETER_NAMES.index("a")
+        b_index = PARAMETER_NAMES.index("b")
+
+        if not np.all(
+            chains[:, :, b_index] > chains[:, :, a_index]
+        ):
+            raise RuntimeError(
+                "Saved constrained-run posterior contains samples "
+                "violating the physical constraint b > a."
+            )
 
     posterior, post_logps, burn_in = (
         apply_burn_in(
@@ -2730,19 +2932,19 @@ def main() -> None:
     )
 
     print(
-        "    posterior_traces.png"
+        "    posterior_traces.png / posterior_traces.pdf"
     )
 
     print(
-        "    posterior_distributions.png"
+        "    posterior_distributions.png / posterior_distributions.pdf"
     )
 
     print(
-        "    posterior_correlation_matrix.png"
+        "    posterior_correlation_matrix.png / posterior_correlation_matrix.pdf"
     )
 
     print(
-        "    posterior_pairwise.png"
+        "    posterior_pairwise.png / posterior_pairwise.pdf"
     )
 
     print(

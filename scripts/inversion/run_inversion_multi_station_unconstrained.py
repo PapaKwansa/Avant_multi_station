@@ -1,41 +1,40 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+AVANT unconstrained Bayesian inversion baseline.
+
+This runner preserves the earlier seven-parameter production formulation
+in which h is inferred and a and b are independently sampled.
+
+It is retained for reproducibility and comparison with the constrained
+production inversion in run_inversion_multi_station.py.
+
+For the current AVANT production analysis, use:
+    scripts/inversion/run_inversion_multi_station.py
+"""
 
 """
-AVANT 1-DARCY CONSTRAINED BAYESIAN INVERSION
-============================================
+Production PyDREAM runner for the AVANT 1-Darcy transient analytical
+Bayesian inversion.
 
-Production PyDREAM runner for the canonical AVANT 1-Darcy transient
-analytical strain model.
+==============================================================================
+CANONICAL MCMC STATE
+==============================================================================
 
-Scientific parameterization
-----------------------------
+Physical parameters of interest:
 
-The present inversion uses independently established AVANT geometry
-constraints:
+    a
+    b
+    h
+    theta_deg
+    x0_prime
+    y0_prime
 
-    h = 520 m
-    b > a
+Statistical nuisance parameter:
 
-The internal sampled state is therefore:
+    log10_sigma_strain
 
-    [
-        a,
-        b_fraction,
-        theta_deg,
-        x0_prime,
-        y0_prime,
-        log10_sigma_strain,
-    ]
-
-The physical b is reconstructed as
-
-    b = a + b_fraction (1000 - a),
-
-which guarantees b > a for every valid sample.
-
-The validated likelihood module still expects the canonical seven-
-parameter state:
+Complete sampled state:
 
     [
         a,
@@ -47,72 +46,75 @@ parameter state:
         log10_sigma_strain,
     ]
 
-This runner reconstructs that canonical state internally by inserting
-the fixed depth h = 520 m before evaluating the likelihood.
+==============================================================================
+CANONICAL 1-DARCY TRANSIENT DATA CONTRACT
+==============================================================================
 
-Fixed analytical-model inputs
-------------------------------
+Station metadata:
 
-    h        = 520 m       fixed physical source depth
-    c        = 3.125 m     fixed vertical semi-dimension
-    nu       = 0.35        fixed Poisson ratio
-    E        = configured fixed Young's modulus
-    pmax     = configured pressure amplitude
-    tpeak    = configured pressure peak time
-    d        = configured transient parameter
-    alpha    = configured Biot coefficient
+    datasets/comsol/1darcy/metadata/stations.csv
 
-Geometric constraint
---------------------
+Expected columns:
 
-The AVANT geometry shown in the model definition has:
+    station,x,y,z
 
-    2b > 2a
+Expected stations:
 
-which is equivalent to:
+    S01, S02, ..., S08
 
-    b > a
+Observed transient strain:
 
-The physical constraint b > a is enforced by the internal
-b_fraction parameterization, so invalid geometric states are
-never proposed by the sampler.
+    datasets/comsol/1darcy/processed/strain.csv
 
-Convergence
------------
+Expected columns:
 
-Unlike the earlier production runner, convergence requires:
+    time_s
 
-    1. at least --min-iter iterations per chain, and
-    2. every sampled parameter has R-hat below --rhat-threshold.
+    eXX_S01 ... eXX_S08
+    eYY_S01 ... eYY_S08
+    eZZ_S01 ... eZZ_S08
+    eXY_S01 ... eXY_S08
 
-The sampler is run once for the requested number of iterations so that
-MCMC chains are continuous rather than concatenated from independent
-batched restarts.
+The older datasets/AVANT_stations.csv file is intentionally ignored.
+That file belongs to an older four-station workflow and must never be
+silently selected for the current 1-Darcy transient inversion.
 
-The fixed parameter h is NOT included in R-hat calculations because
-it has zero variance by construction.
+==============================================================================
+SCIENTIFIC LIKELIHOOD
+==============================================================================
 
-Posterior storage
------------------
+The reusable likelihood is implemented in:
 
-The sampler works internally in six dimensions, but posterior files are
-saved in the canonical seven-column AVANT parameter order:
+    src/avant_model/inversion/bayesian_inversion_multi_station.py
 
-    a
-    b
-    h
-    theta_deg
-    x0_prime
-    y0_prime
-    log10_sigma_strain
+This runner supplies the data and fixed analytical-model parameters to that
+likelihood.
 
-The fixed value h=520 m is inserted into every saved posterior sample.
+==============================================================================
+RESPONSIBILITIES
+==============================================================================
 
-Additional six-dimensional posterior files are also retained for
-diagnostic purposes.
+This script is responsible for:
 
-No posterior plotting is performed here. Visualization and posterior
-predictive reporting remain separate post-processing tasks.
+    1. Loading the canonical 1-Darcy transient station metadata.
+    2. Loading and validating the transient strain dataset.
+    3. Loading fixed analytical-model parameters.
+    4. Defining the PyDREAM priors.
+    5. Running the PyDREAM sampler.
+    6. Monitoring Gelman-Rubin convergence.
+    7. Saving posterior samples and provenance metadata.
+
+Posterior plotting and posterior-predictive analysis are intentionally
+implemented later in a separate post-processing module.
+
+==============================================================================
+MULTIPROCESSING
+==============================================================================
+
+The PyDREAM likelihood wrapper is defined at module scope.
+
+This is required for Windows multiprocessing with the "spawn" start method:
+nested functions such as main.<locals>.likelihood_wrapper cannot be pickled.
 """
 
 from __future__ import annotations
@@ -150,7 +152,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 from scipy.stats import uniform
 
 from pydream.convergence import Gelman_Rubin
@@ -169,58 +170,37 @@ REPO_ROOT = (
 )
 
 if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
+    sys.path.insert(
+        0,
+        str(REPO_ROOT),
+    )
 
 from avant_model.data import (
     multi_stations_input as input_data,
 )
 
 from avant_model.inversion.bayesian_inversion_multi_station import (
+    PHYSICAL_PARAMETER_NAMES,
+    NUISANCE_PARAMETER_NAMES,
+    SAMPLED_PARAMETER_NAMES,
     likelihood,
 )
 
 
 # ============================================================================
-# Canonical parameter definitions
+# Canonical definitions
 # ============================================================================
 
-# Parameters actually sampled by PyDREAM.
-#
-# b is represented internally by a dimensionless fraction q_b so that
-# the physical AVANT constraint b > a is satisfied by construction.
-SAMPLED_PARAMETER_NAMES = (
-    "a",
-    "b_fraction",
-    "theta_deg",
-    "x0_prime",
-    "y0_prime",
-    "log10_sigma_strain",
+PHYSICAL_NAMES = tuple(
+    PHYSICAL_PARAMETER_NAMES
 )
 
-# Canonical AVANT parameter order used by the existing likelihood,
-# post-processing, and downstream workflows.
-CANONICAL_PARAMETER_NAMES = (
-    "a",
-    "b",
-    "h",
-    "theta_deg",
-    "x0_prime",
-    "y0_prime",
-    "log10_sigma_strain",
+NUISANCE_NAMES = tuple(
+    NUISANCE_PARAMETER_NAMES
 )
 
-PHYSICAL_PARAMETER_NAMES = (
-    "a",
-    "b",
-    "h",
-    "theta_deg",
-    "x0_prime",
-    "y0_prime",
-)
-
-NUISANCE_PARAMETER_NAMES = (
-    "log10_sigma_strain",
+PARAM_NAMES = tuple(
+    SAMPLED_PARAMETER_NAMES
 )
 
 COMPONENTS = (
@@ -243,14 +223,7 @@ EXPECTED_STATIONS = (
 
 
 # ============================================================================
-# Fixed AVANT geometry
-# ============================================================================
-
-DEFAULT_FIXED_H = 520.0
-
-
-# ============================================================================
-# Canonical dataset paths
+# Canonical 1-Darcy transient data paths
 # ============================================================================
 
 STATION_FILE = (
@@ -284,7 +257,7 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 DEFAULT_MODEL_NAME = (
-    "pydream_1darcy_h520_bgt_a_theta_center_sigma"
+    "pydream_1darcy_ab_h_theta_center_sigma"
 )
 
 
@@ -292,16 +265,10 @@ DEFAULT_MODEL_NAME = (
 # PyDREAM defaults
 # ============================================================================
 
-DEFAULT_MAX_ITER = 10000
-
+DEFAULT_MAX_ITER = 50000
+DEFAULT_BATCH_SIZE = 5000
 DEFAULT_NCHAINS = 4
-
 DEFAULT_RHAT_THRESHOLD = 1.10
-
-# Require enough samples before a convergence decision is allowed.
-DEFAULT_MIN_ITER = 2000
-
-
 DEFAULT_SEED = 42
 
 
@@ -312,8 +279,8 @@ DEFAULT_SEED = 42
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Run the constrained AVANT 1-Darcy Bayesian inversion "
-            "with fixed h and the physical b > a geometry constraint."
+            "Run the production PyDREAM Bayesian inversion "
+            "for the canonical AVANT 1-Darcy transient dataset."
         )
     )
 
@@ -337,16 +304,6 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--fixed-h",
-        type=float,
-        default=DEFAULT_FIXED_H,
-        help=(
-            "Fixed inclusion-center depth [m]. "
-            f"Default: {DEFAULT_FIXED_H:g}."
-        ),
-    )
-
-    parser.add_argument(
         "--max-iter",
         type=int,
         default=DEFAULT_MAX_ITER,
@@ -354,20 +311,17 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Number of iterations in each PyDREAM batch.",
+    )
+
+    parser.add_argument(
         "--nchains",
         type=int,
         default=DEFAULT_NCHAINS,
         help="Number of PyDREAM chains.",
-    )
-
-    parser.add_argument(
-        "--min-iter",
-        type=int,
-        default=DEFAULT_MIN_ITER,
-        help=(
-            "Minimum iterations per chain before convergence "
-            "can be declared."
-        ),
     )
 
     parser.add_argument(
@@ -402,7 +356,7 @@ def parse_args():
 # JSON helper
 # ============================================================================
 
-def save_json(path: Path, payload):
+def save_json(path, payload):
     with open(
         path,
         "w",
@@ -422,6 +376,8 @@ def save_json(path: Path, payload):
 def load_station_metadata():
     """
     Load the canonical eight-station 1-Darcy metadata.
+
+    No fallback station-file search is permitted.
     """
 
     if not STATION_FILE.exists():
@@ -539,6 +495,8 @@ def expected_component_columns():
 def load_observed_dataset():
     """
     Load the canonical eight-station transient strain dataset.
+
+    No alternate observed dataset is accepted.
     """
 
     if not OBSERVED_FILE.exists():
@@ -646,15 +604,12 @@ def load_observed_dataset():
 # Fixed analytical-model inputs
 # ============================================================================
 
-def load_fixed_model_inputs(
-    observed_time,
-    fixed_h,
-):
+def load_fixed_model_inputs(observed_time):
     """
     Load fixed analytical-model inputs.
 
-    The supplied h is explicitly controlled by the inversion
-    configuration rather than sampled.
+    The observed dataset supplies the authoritative time vector.
+    The existing model configuration is checked against it.
     """
 
     params = input_data.read_input()
@@ -694,6 +649,7 @@ def load_fixed_model_inputs(
     )
 
     if configured_time.size:
+
         if configured_time.shape != observed_time.shape:
             raise RuntimeError(
                 "Configured analytical-model time vector and "
@@ -713,8 +669,7 @@ def load_fixed_model_inputs(
                 "match the canonical transient strain dataset."
             )
 
-    fixed = {
-        "h": float(fixed_h),
+    return {
         "pmax": float(params["pmax"]),
         "E": float(params["E"]),
         "c": float(params["c_fixed"]),
@@ -724,13 +679,6 @@ def load_fixed_model_inputs(
         "alpha": float(params["alpha"]),
         "time": observed_time.copy(),
     }
-
-    if not np.isfinite(fixed["h"]) or fixed["h"] <= 0.0:
-        raise ValueError(
-            "Fixed h must be finite and positive."
-        )
-
-    return fixed
 
 
 # ============================================================================
@@ -763,15 +711,11 @@ def make_uniform_prior(
 
 def build_priors():
     """
-    Build priors for the six-dimensional sampled state.
+    Current broad Bayesian-development prior set.
 
-    The internal geometry parameterization is
-
-        b = a + q_b (BMAX - a),
-
-    where q_b is dimensionless and constrained to 0 < q_b <= 1.
-    Therefore the physical AVANT relation b > a is guaranteed by
-    construction rather than by returning -inf from the likelihood.
+    These ranges are retained for the first production refactor.
+    We will later move the finalized narrow/current/broad scenarios
+    into explicit configuration files.
     """
 
     bounds = {
@@ -779,9 +723,13 @@ def build_priors():
             40.0,
             900.0,
         ],
-        "b_fraction": [
-            1.0e-6,
-            1.0,
+        "b": [
+            20.0,
+            1000.0,
+        ],
+        "h": [
+            50.0,
+            900.0,
         ],
         "theta_deg": [
             -90.0,
@@ -803,10 +751,33 @@ def build_priors():
 
     priors = [
         make_uniform_prior(
-            *bounds[name],
-            name=name,
-        )
-        for name in SAMPLED_PARAMETER_NAMES
+            *bounds["a"],
+            name="a",
+        ),
+        make_uniform_prior(
+            *bounds["b"],
+            name="b",
+        ),
+        make_uniform_prior(
+            *bounds["h"],
+            name="h",
+        ),
+        make_uniform_prior(
+            *bounds["theta_deg"],
+            name="theta_deg",
+        ),
+        make_uniform_prior(
+            *bounds["x0_prime"],
+            name="x0_prime",
+        ),
+        make_uniform_prior(
+            *bounds["y0_prime"],
+            name="y0_prime",
+        ),
+        make_uniform_prior(
+            *bounds["log10_sigma_strain"],
+            name="log10_sigma_strain",
+        ),
     ]
 
     return priors, bounds
@@ -822,8 +793,7 @@ def flatten_observed_vector(
 ):
     return np.concatenate(
         [
-            observed[column]
-            .to_numpy(
+            observed[column].to_numpy(
                 dtype=float
             )
             for column in component_columns
@@ -834,14 +804,6 @@ def flatten_observed_vector(
 def normalize_sampled_params(
     sampled_params,
 ):
-    """
-    Normalize PyDREAM output into a list of per-chain arrays.
-
-    Each returned chain has shape:
-
-        (n_iterations, 6)
-    """
-
     array = np.asarray(
         sampled_params
     )
@@ -858,7 +820,6 @@ def normalize_sampled_params(
         ]
 
     if array.ndim == 2:
-        # PyDREAM may occasionally return one 2-D chain directly.
         return [
             np.asarray(
                 array,
@@ -872,167 +833,13 @@ def normalize_sampled_params(
     )
 
 
-BMAX = 1000.0
-
-
-def physical_b_from_sample(a, b_fraction):
-    """
-    Map the internal b-fraction parameter to the physical b [m].
-
-    b = a + q_b (BMAX - a)
-
-    With 0 < q_b <= 1 and a < BMAX, this guarantees b > a and
-    b <= BMAX.
-    """
-
-    a = float(a)
-    b_fraction = float(b_fraction)
-
-    if not (np.isfinite(a) and np.isfinite(b_fraction)):
-        raise ValueError("a and b_fraction must be finite.")
-
-    if not (a > 0.0 and a < BMAX):
-        raise ValueError(
-            f"a must satisfy 0 < a < {BMAX:g}; received {a}."
-        )
-
-    if not (0.0 < b_fraction <= 1.0):
-        raise ValueError(
-            "b_fraction must satisfy 0 < b_fraction <= 1."
-        )
-
-    return a + b_fraction * (BMAX - a)
-
-
-def physical_parameters_from_sample(sampled_parameters):
-    """
-    Convert the internal six-dimensional state to physical values.
-
-    Internal sampled state:
-        a
-        b_fraction
-        theta_deg
-        x0_prime
-        y0_prime
-        log10_sigma_strain
-    """
-
-    values = np.asarray(
-        sampled_parameters,
-        dtype=float,
-    ).ravel()
-
-    if values.size != len(SAMPLED_PARAMETER_NAMES):
-        raise ValueError(
-            "Expected "
-            f"{len(SAMPLED_PARAMETER_NAMES)} sampled parameters "
-            f"{SAMPLED_PARAMETER_NAMES}, "
-            f"but received {values.size}."
-        )
-
-    (
-        a,
-        b_fraction,
-        theta_deg,
-        x0_prime,
-        y0_prime,
-        log10_sigma_strain,
-    ) = values
-
-    b = physical_b_from_sample(
-        a,
-        b_fraction,
-    )
-
-    return {
-        "a": float(a),
-        "b_fraction": float(b_fraction),
-        "b": float(b),
-        "theta_deg": float(theta_deg),
-        "x0_prime": float(x0_prime),
-        "y0_prime": float(y0_prime),
-        "log10_sigma_strain": float(log10_sigma_strain),
-    }
-
-
-def reconstruct_canonical_state(
-    sampled_parameters,
-    fixed_h,
-):
-    """
-    Convert the internal six-dimensional sampled state to the validated
-    seven-dimensional canonical likelihood state.
-    """
-
-    p = physical_parameters_from_sample(
-        sampled_parameters
-    )
-
-    return np.array(
-        [
-            p["a"],
-            p["b"],
-            float(fixed_h),
-            p["theta_deg"],
-            p["x0_prime"],
-            p["y0_prime"],
-            p["log10_sigma_strain"],
-        ],
-        dtype=float,
-    )
-
-
-def expand_chain_to_canonical(
-    sampled_chain,
-    fixed_h,
-):
-    """
-    Convert an internal six-dimensional chain to the canonical
-    seven-dimensional physical posterior representation.
-    """
-
-    chain = np.asarray(
-        sampled_chain,
-        dtype=float,
-    )
-
-    if (
-        chain.ndim != 2
-        or chain.shape[1] != len(SAMPLED_PARAMETER_NAMES)
-    ):
-        raise ValueError(
-            "Expected sampled chain shape "
-            f"(n, {len(SAMPLED_PARAMETER_NAMES)}), "
-            f"received {chain.shape}."
-        )
-
-    a = chain[:, 0]
-    b_fraction = chain[:, 1]
-    b = a + b_fraction * (BMAX - a)
-    h = np.full(
-        chain.shape[0],
-        float(fixed_h),
-        dtype=float,
-    )
-
-    return np.column_stack(
-        [
-            a,
-            b,
-            h,
-            chain[:, 2:],
-        ]
-    )
-
-
 # ============================================================================
-# Top-level pickleable PyDREAM likelihood
+# TOP-LEVEL PICKLEABLE PYDREAM LIKELIHOOD
 # ============================================================================
 
 def pydream_likelihood(
     sampled_parameters,
     *,
-    fixed_h,
     observed_vector,
     time_vector,
     x_prime,
@@ -1049,42 +856,20 @@ def pydream_likelihood(
     station_names,
 ):
     """
-    Pickleable PyDREAM likelihood wrapper.
+    Top-level pickleable likelihood wrapper for PyDREAM.
 
-    Internal geometry parameterization:
-        b = a + b_fraction * (BMAX - a)
+    IMPORTANT
+    ---------
+    This function must remain at module scope.
 
-    This guarantees b > a for every valid sampled state.
-
-    Fixed depth:
-        h = fixed_h
+    Windows multiprocessing uses the "spawn" method by default.
+    Functions defined inside main() are local objects and cannot be
+    pickled for transfer to PyDREAM worker processes.
     """
 
     try:
-        sampled = np.asarray(
-            sampled_parameters,
-            dtype=float,
-        ).ravel()
-
-        if sampled.size != len(
-            SAMPLED_PARAMETER_NAMES
-        ):
-            return -np.inf
-
-        # Validate/reconstruct the physical geometry.
-        # No -inf branch is required for b > a because the sampled
-        # b_fraction parameter guarantees the constraint by construction.
-        physical_parameters_from_sample(sampled)
-
-        canonical_state = (
-            reconstruct_canonical_state(
-                sampled,
-                fixed_h=fixed_h,
-            )
-        )
-
         return likelihood(
-            canonical_state,
+            sampled_parameters,
             observed_vector,
             time=time_vector,
             x_prime=x_prime,
@@ -1105,12 +890,15 @@ def pydream_likelihood(
         print(
             "[ERROR] Likelihood evaluation failed."
         )
+
         print(
             f"        parameters = {sampled_parameters}"
         )
+
         print(
             f"        error = {exc}"
         )
+
         return -np.inf
 
 
@@ -1133,34 +921,13 @@ def create_run_manifest(
                 timezone.utc
             ).isoformat()
         ),
-
         "repository_root": str(
             REPO_ROOT
         ),
-
         "runner": str(
             Path(__file__).resolve()
         ),
-
         "model_name": args.model_name,
-
-        "parameterization": {
-            "sampled_parameter_names": list(
-                SAMPLED_PARAMETER_NAMES
-            ),
-            "canonical_parameter_names": list(
-                CANONICAL_PARAMETER_NAMES
-            ),
-            "fixed_parameters": {
-                "h": float(fixed["h"]),
-            },
-            "geometric_constraints": {
-                "b_greater_than_a": True,
-                "parameterization": "b = a + b_fraction * (1000 - a)",
-                "b_upper_bound_m": BMAX,
-            },
-        },
-
         "data_contract": {
             "station_file": str(
                 STATION_FILE
@@ -1183,7 +950,15 @@ def create_run_manifest(
                 len(observed.columns) - 1
             ),
         },
-
+        "parameter_names": list(
+            PARAM_NAMES
+        ),
+        "physical_parameter_names": list(
+            PHYSICAL_NAMES
+        ),
+        "nuisance_parameter_names": list(
+            NUISANCE_NAMES
+        ),
         "sampler": {
             "name": "PyDREAM",
             "nchains": int(
@@ -1192,8 +967,8 @@ def create_run_manifest(
             "max_iter": int(
                 args.max_iter
             ),
-            "min_iter": int(
-                args.min_iter
+            "batch_size": int(
+                args.batch_size
             ),
             "rhat_threshold": float(
                 args.rhat_threshold
@@ -1203,9 +978,7 @@ def create_run_manifest(
             ),
             "mp_start": args.mp_start,
         },
-
         "fixed_model_inputs": {
-            "h": fixed["h"],
             "pmax": fixed["pmax"],
             "E": fixed["E"],
             "c": fixed["c"],
@@ -1214,21 +987,13 @@ def create_run_manifest(
             "d": fixed["d"],
             "alpha": fixed["alpha"],
         },
-
         "priors": prior_bounds,
-        "b_parameterization": {
-            "name": "b_fraction",
-            "formula": "b = a + b_fraction * (1000 - a)",
-            "b_upper_bound_m": BMAX,
-        },
-
         "software": {
             "python": platform.python_version(),
             "platform": platform.platform(),
             "numpy": np.__version__,
             "pandas": pd.__version__,
         },
-
         "output_directory": str(
             output_dir
         ),
@@ -1243,7 +1008,7 @@ def main():
     args = parse_args()
 
     # ------------------------------------------------------------------
-    # Validate controls
+    # Validate run controls
     # ------------------------------------------------------------------
 
     if args.max_iter <= 0:
@@ -1251,14 +1016,14 @@ def main():
             "--max-iter must be positive."
         )
 
+    if args.batch_size <= 0:
+        raise ValueError(
+            "--batch-size must be positive."
+        )
+
     if args.nchains < 2:
         raise ValueError(
             "--nchains must be at least 2."
-        )
-
-    if args.min_iter <= 0:
-        raise ValueError(
-            "--min-iter must be positive."
         )
 
     if not (
@@ -1270,12 +1035,15 @@ def main():
             "--rhat-threshold must be between 1 and 2."
         )
 
+    if args.batch_size > args.max_iter:
+        args.batch_size = args.max_iter
+
     np.random.seed(
         args.seed
     )
 
     # ------------------------------------------------------------------
-    # Load canonical data
+    # Load canonical 1-Darcy transient inputs
     # ------------------------------------------------------------------
 
     stations = (
@@ -1294,6 +1062,9 @@ def main():
         )
     )
 
+    # The metadata file uses x,y,z.
+    # These are the station coordinates supplied to the analytical
+    # forward model as x_prime, y_prime, z.
     x_prime = (
         stations[
             "x"
@@ -1338,13 +1109,12 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # Fixed model inputs
+    # Fixed analytical inputs
     # ------------------------------------------------------------------
 
     fixed = (
         load_fixed_model_inputs(
-            observed_time,
-            fixed_h=args.fixed_h,
+            observed_time
         )
     )
 
@@ -1361,11 +1131,14 @@ def main():
     # ------------------------------------------------------------------
 
     if args.output_dir is None:
+
         output_dir = (
             DEFAULT_OUTPUT_ROOT
             / args.model_name
         )
+
     else:
+
         output_dir = (
             args.output_dir
         )
@@ -1388,7 +1161,7 @@ def main():
     )
 
     print(
-        "AVANT 1-DARCY CONSTRAINED BAYESIAN PARAMETER INFERENCE"
+        "AVANT 1-DARCY BAYESIAN PARAMETER INFERENCE"
     )
 
     print(
@@ -1440,35 +1213,13 @@ def main():
     )
 
     print(
-        "\nSAMPLED PHYSICAL PARAMETERS"
+        "\nPHYSICAL PARAMETERS"
     )
 
-    for name in (
-        "a",
-        "b",
-        "theta_deg",
-        "x0_prime",
-        "y0_prime",
-    ):
+    for name in PHYSICAL_NAMES:
         print(
             f"  {name}"
         )
-
-    print(
-        "\nFIXED PHYSICAL PARAMETERS"
-    )
-
-    print(
-        f"  h = {fixed['h']} m"
-    )
-
-    print(
-        "\nGEOMETRIC CONSTRAINT"
-    )
-
-    print(
-        "  b > a (enforced by construction)"
-    )
 
     print(
         "\nSTATISTICAL NUISANCE PARAMETER"
@@ -1483,10 +1234,10 @@ def main():
     )
 
     for name in (
+        "pmax",
+        "E",
         "c",
         "nu",
-        "E",
-        "pmax",
         "tpeak",
         "d",
         "alpha",
@@ -1500,33 +1251,14 @@ def main():
         "\nPRIORS"
     )
 
-    for name in SAMPLED_PARAMETER_NAMES:
+    for name in PARAM_NAMES:
         print(
             f"  {name:20s} = "
             f"{prior_bounds[name]}"
         )
 
-    print(
-        "\nCONVERGENCE SETTINGS"
-    )
-
-    print(
-        f"  maximum iterations/chain = "
-        f"{args.max_iter}"
-    )
-
-    print(
-        f"  minimum iterations = "
-        f"{args.min_iter}"
-    )
-
-    print(
-        f"  R-hat threshold = "
-        f"{args.rhat_threshold}"
-    )
-
     # ------------------------------------------------------------------
-    # Save manifest and data provenance
+    # Save manifest
     # ------------------------------------------------------------------
 
     manifest = (
@@ -1559,13 +1291,11 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # Build pickleable likelihood callable
+    # Build PICKLEABLE likelihood callable
     # ------------------------------------------------------------------
 
     pydream_likelihood_fn = partial(
         pydream_likelihood,
-
-        fixed_h=fixed["h"],
 
         observed_vector=(
             observed_vector
@@ -1583,7 +1313,9 @@ def main():
             y_prime
         ),
 
-        z=z,
+        z=(
+            z
+        ),
 
         c=(
             fixed["c"]
@@ -1636,11 +1368,19 @@ def main():
     # Sampling state
     # ------------------------------------------------------------------
 
-    # PyDREAM is run once for the requested number of iterations.
-    # This is intentional: repeatedly calling run_dream() in batches
-    # without restoring the previous chain state would concatenate
-    # independent MCMC starts and make cumulative R-hat diagnostics
-    # invalid.
+    chain_collection = None
+
+    log_probability_collection = []
+
+    total_iterations = 0
+
+    batch_number = 0
+
+    convergence_history = []
+
+    converged = False
+    convergence_iteration = None
+    final_rhat = None
 
     print(
         "\n"
@@ -1655,206 +1395,240 @@ def main():
         "=" * 78
     )
 
-    start_time = time.time()
-
-    sampled_params, logps = run_dream(
-        parameters=priors,
-        likelihood=pydream_likelihood_fn,
-        niterations=args.max_iter,
-        nchains=args.nchains,
-        mp_context=mp_context,
-        snooker=True,
-        adapt_gamma=True,
-        save_history=True,
-        model_name=args.model_name,
-    )
-
-    elapsed_sampling = time.time() - start_time
-
-    print(
-        f"[INFO] PyDREAM sampling finished in "
-        f"{elapsed_sampling:.2f} s"
-    )
-
-    sampled_chain_collection = normalize_sampled_params(
-        sampled_params
-    )
-
-    if len(sampled_chain_collection) != args.nchains:
-        raise RuntimeError(
-            "PyDREAM returned "
-            f"{len(sampled_chain_collection)} chains, "
-            f"expected {args.nchains}."
-        )
-
-    for chain_index, chain in enumerate(sampled_chain_collection):
-        if chain.ndim != 2:
-            raise RuntimeError(
-                f"Chain {chain_index} does not have two dimensions."
-            )
-
-        if chain.shape[1] != len(SAMPLED_PARAMETER_NAMES):
-            raise RuntimeError(
-                f"Chain {chain_index} has {chain.shape[1]} parameters; "
-                f"expected {len(SAMPLED_PARAMETER_NAMES)}."
-            )
-
-        if not np.all(np.isfinite(chain)):
-            raise RuntimeError(
-                f"Chain {chain_index} contains non-finite sampled parameters."
-            )
-
-    sampled_posterior_chains = np.stack(
-        sampled_chain_collection,
-        axis=0,
-    )
-
-    posterior_logps = np.asarray(
-        logps,
-        dtype=float,
-    ).ravel()
-
-    expected_logps = args.nchains * args.max_iter
-    if posterior_logps.size != expected_logps:
-        raise RuntimeError(
-            "Unexpected number of PyDREAM log-probability values.\n"
-            f"Expected: {expected_logps}\n"
-            f"Received: {posterior_logps.size}"
-        )
-
     # ------------------------------------------------------------------
-    # Final Gelman-Rubin convergence diagnostic
+    # PyDREAM loop
     # ------------------------------------------------------------------
 
-    convergence_history = []
-    rhat = None
+    while (
+        total_iterations
+        < args.max_iter
+    ):
 
-    if args.max_iter < args.min_iter:
-        print(
-            "[WARN] max-iter is smaller than min-iter; "
-            "the run will be reported as not converged."
-        )
+        batch_number += 1
 
-    try:
-        rhat = np.asarray(
-            Gelman_Rubin(
-                [
-                    np.asarray(chain, dtype=float)
-                    for chain in sampled_chain_collection
-                ]
-            ),
-            dtype=float,
+        batch_iterations = min(
+            args.batch_size,
+            args.max_iter
+            - total_iterations,
         )
 
         print(
-            "[INFO] Final R-hat =",
-            np.round(rhat, 4),
+            f"\n[INFO] Batch {batch_number}: "
+            f"{batch_iterations} iterations"
         )
 
-        if rhat.size != len(SAMPLED_PARAMETER_NAMES):
+        start_time = time.time()
+
+        sampled_params, logps = (
+            run_dream(
+                parameters=priors,
+
+                likelihood=(
+                    pydream_likelihood_fn
+                ),
+
+                niterations=(
+                    batch_iterations
+                ),
+
+                nchains=(
+                    args.nchains
+                ),
+
+                mp_context=(
+                    mp_context
+                ),
+
+                snooker=True,
+
+                adapt_gamma=True,
+
+                save_history=True,
+
+                model_name=(
+                    f"{args.model_name}"
+                    f"_batch{batch_number:03d}"
+                ),
+            )
+        )
+
+        batch_chains = (
+            normalize_sampled_params(
+                sampled_params
+            )
+        )
+
+        if len(batch_chains) != (
+            args.nchains
+        ):
             raise RuntimeError(
-                "R-hat dimensionality mismatch.\n"
-                f"Expected: {len(SAMPLED_PARAMETER_NAMES)}\n"
-                f"Received: {rhat.size}"
+                "PyDREAM returned "
+                f"{len(batch_chains)} chains, "
+                f"expected {args.nchains}."
             )
 
-        rhat_finite = bool(np.all(np.isfinite(rhat)))
-        all_below = bool(
-            rhat_finite
-            and args.max_iter >= args.min_iter
-            and np.all(rhat < args.rhat_threshold)
+        if chain_collection is None:
+
+            chain_collection = [
+                chain.copy()
+                for chain in batch_chains
+            ]
+
+        else:
+
+            for chain_index in range(
+                args.nchains
+            ):
+
+                chain_collection[
+                    chain_index
+                ] = np.vstack(
+                    [
+                        chain_collection[
+                            chain_index
+                        ],
+                        batch_chains[
+                            chain_index
+                        ],
+                    ]
+                )
+
+        log_probability_collection.append(
+            np.asarray(
+                logps,
+                dtype=float,
+            ).ravel()
         )
 
-        convergence_history.append(
-            {
-                "iterations_per_chain": int(args.max_iter),
-                "rhat": [float(value) for value in rhat],
-                "all_below_threshold": all_below,
-                "minimum_iterations_reached": bool(
-                    args.max_iter >= args.min_iter
-                ),
-                "converged": all_below,
-            }
+        total_iterations += (
+            batch_iterations
         )
 
-        converged = all_below
-        convergence_iteration = (
-            args.max_iter if converged else None
-        )
-        final_rhat = rhat.copy()
-
-    except Exception as exc:
         print(
-            "[WARN] Gelman-Rubin calculation failed:"
-        )
-        print(
-            f"       {exc}"
+            f"[INFO] Batch finished in "
+            f"{time.time() - start_time:.2f} s"
         )
 
-        convergence_history.append(
-            {
-                "iterations_per_chain": int(args.max_iter),
-                "rhat": None,
-                "all_below_threshold": False,
-                "minimum_iterations_reached": bool(
-                    args.max_iter >= args.min_iter
+        # --------------------------------------------------------------
+        # Gelman-Rubin
+        # --------------------------------------------------------------
+
+        try:
+
+            rhat = np.asarray(
+                Gelman_Rubin(
+                    [
+                        np.asarray(
+                            chain,
+                            dtype=float,
+                        )
+                        for chain in (
+                            chain_collection
+                        )
+                    ]
                 ),
-                "converged": False,
-                "error": str(exc),
-            }
-        )
+                dtype=float,
+            )
 
-        converged = False
-        convergence_iteration = None
-        final_rhat = None
+            print(
+                "[INFO] R-hat =",
+                np.round(
+                    rhat,
+                    4,
+                ),
+            )
+
+            convergence_entry = {
+                "batch": int(
+                    batch_number
+                ),
+                "total_iterations": int(
+                    total_iterations
+                ),
+                "rhat": [
+                    float(value)
+                    for value in rhat
+                ],
+                "all_below_threshold": bool(
+                    np.all(
+                        rhat
+                        < args.rhat_threshold
+                    )
+                ),
+            }
+
+            convergence_history.append(
+                convergence_entry
+            )
+
+            if convergence_entry[
+                "all_below_threshold"
+            ]:
+
+                converged = True
+                convergence_iteration = total_iterations
+                final_rhat = rhat.copy()
+
+                print(
+                    "[INFO] Gelman-Rubin convergence criterion reached."
+                )
+                print(
+                    f"[INFO] Converged after {total_iterations} iterations per chain."
+                )
+
+                break
+
+        except Exception as exc:
+
+            print(
+                "[WARN] Gelman-Rubin calculation failed:"
+            )
+
+            print(
+                f"       {exc}"
+            )
+
+            convergence_history.append(
+                {
+                    "batch": int(
+                        batch_number
+                    ),
+                    "total_iterations": int(
+                        total_iterations
+                    ),
+                    "rhat": None,
+                    "all_below_threshold": False,
+                    "error": str(exc),
+                }
+            )
 
     # ------------------------------------------------------------------
     # Final chain validation
     # ------------------------------------------------------------------
 
-    if sampled_chain_collection is None:
+    if chain_collection is None:
+
         raise RuntimeError(
             "No posterior chains were returned."
         )
 
-    if len(
-        sampled_chain_collection
-    ) != args.nchains:
+    if len(chain_collection) != (
+        args.nchains
+    ):
+
         raise RuntimeError(
             "Final chain count does not match "
             "requested nchains."
         )
 
-    sampled_posterior_chains = np.stack(
-        sampled_chain_collection,
-        axis=0,
-    )
-
-    # ------------------------------------------------------------------
-    # Canonical seven-dimensional reconstruction
-    # ------------------------------------------------------------------
-
     posterior_chains = np.stack(
-        [
-            expand_chain_to_canonical(
-                chain,
-                fixed_h=fixed["h"],
-            )
-            for chain in (
-                sampled_chain_collection
-            )
-        ],
+        chain_collection,
         axis=0,
     )
 
-    # ------------------------------------------------------------------
-    # Flattened posterior arrays for saving and analysis
-    # ------------------------------------------------------------------
-
-    flat_sampled = (
-        sampled_posterior_chains.reshape(
-            -1,
-            sampled_posterior_chains.shape[-1],
+    posterior_logps = (
+        np.concatenate(
+            log_probability_collection
         )
     )
 
@@ -1866,76 +1640,33 @@ def main():
     )
 
     if flat_samples.shape[1] != (
-        len(CANONICAL_PARAMETER_NAMES)
+        len(PARAM_NAMES)
     ):
+
         raise RuntimeError(
-            "Canonical posterior dimensionality mismatch.\n"
-            f"Expected: "
-            f"{len(CANONICAL_PARAMETER_NAMES)}\n"
+            "Posterior dimensionality mismatch.\n"
+            f"Expected: {len(PARAM_NAMES)}\n"
             f"Received: {flat_samples.shape[1]}\n"
-            f"Parameters: "
-            f"{CANONICAL_PARAMETER_NAMES}"
+            f"Parameters: {PARAM_NAMES}"
         )
 
     if posterior_logps.size != (
         flat_samples.shape[0]
     ):
+
         raise RuntimeError(
             "Posterior log-probability count does not "
-            "match flattened posterior samples.\n"
-            f"Log probabilities: "
-            f"{posterior_logps.size}\n"
-            f"Posterior samples: "
-            f"{flat_samples.shape[0]}"
+            "match flattened posterior samples."
         )
 
     # ------------------------------------------------------------------
-    # Final physical-constraint validation
-    # ------------------------------------------------------------------
-
-    # b is reconstructed from b_fraction, so this should be true for
-    # every posterior sample. Keep the explicit check as a safety guard.
-    if not np.all(
-        flat_samples[:, 1] > flat_samples[:, 0]
-    ):
-        raise RuntimeError(
-            "Posterior contains a sample violating the AVANT geometry "
-            "constraint b > a despite the constrained parameterization."
-        )
-
-    if not np.all(
-        flat_samples[:, 1] <= BMAX
-    ):
-        raise RuntimeError(
-            "Posterior contains a sample with physical b above the "
-            f"configured upper bound {BMAX:g} m."
-        )
-
-    if not np.allclose(
-        flat_samples[:, 2],
-        fixed["h"],
-        rtol=0.0,
-        atol=0.0,
-    ):
-        raise RuntimeError(
-            "Posterior contains samples with h "
-            "different from the configured fixed depth."
-        )
-
-    # ------------------------------------------------------------------
-    # Save posterior arrays
+    # Save arrays
     # ------------------------------------------------------------------
 
     np.save(
         output_dir
         / "posterior_chains.npy",
         posterior_chains,
-    )
-
-    np.save(
-        output_dir
-        / "posterior_chains_sampled.npy",
-        sampled_posterior_chains,
     )
 
     np.save(
@@ -1948,12 +1679,6 @@ def main():
         output_dir
         / "posterior_samples_flat.npy",
         flat_samples,
-    )
-
-    np.save(
-        output_dir
-        / "posterior_samples_flat_sampled.npy",
-        flat_sampled,
     )
 
     save_json(
@@ -1981,7 +1706,7 @@ def main():
     map_record = {
         name: float(value)
         for name, value in zip(
-            CANONICAL_PARAMETER_NAMES,
+            PARAM_NAMES,
             map_vector,
         )
     }
@@ -1996,7 +1721,7 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # Posterior moments
+    # Basic posterior moments
     # ------------------------------------------------------------------
 
     posterior_mean = {
@@ -2009,7 +1734,7 @@ def main():
             )
         )
         for index, name in enumerate(
-            CANONICAL_PARAMETER_NAMES
+            PARAM_NAMES
         )
     }
 
@@ -2024,14 +1749,12 @@ def main():
             )
         )
         for index, name in enumerate(
-            CANONICAL_PARAMETER_NAMES
+            PARAM_NAMES
         )
     }
 
-    sigma_index = (
-        CANONICAL_PARAMETER_NAMES.index(
-            "log10_sigma_strain"
-        )
+    sigma_index = PARAM_NAMES.index(
+        "log10_sigma_strain"
     )
 
     sigma_samples = (
@@ -2064,43 +1787,28 @@ def main():
     # ------------------------------------------------------------------
 
     summary = {
-        "parameterization": {
-            "sampled_parameter_names": list(
-                SAMPLED_PARAMETER_NAMES
-            ),
-            "canonical_parameter_names": list(
-                CANONICAL_PARAMETER_NAMES
-            ),
-            "fixed_parameters": {
-                "h": fixed["h"],
-            },
-            "geometric_constraints": {
-                "b_greater_than_a": True,
-                "parameterization": "b = a + b_fraction * (1000 - a)",
-                "b_upper_bound_m": BMAX,
-            },
-        },
-
+        "parameter_names": list(
+            PARAM_NAMES
+        ),
+        "physical_parameter_names": list(
+            PHYSICAL_NAMES
+        ),
+        "nuisance_parameter_names": list(
+            NUISANCE_NAMES
+        ),
         "n_chains": int(
             posterior_chains.shape[0]
         ),
-
         "iterations_per_chain": int(
             posterior_chains.shape[1]
         ),
-
         "total_flat_samples": int(
             flat_samples.shape[0]
         ),
-
         "map": map_record,
-
         "posterior_mean": posterior_mean,
-
         "posterior_std": posterior_std,
-
         "fixed_model_inputs": {
-            "h": fixed["h"],
             "pmax": fixed["pmax"],
             "E": fixed["E"],
             "c": fixed["c"],
@@ -2109,37 +1817,27 @@ def main():
             "d": fixed["d"],
             "alpha": fixed["alpha"],
         },
-
         "prior_bounds": prior_bounds,
-
         "run_status": (
             "converged"
             if converged
             else "not_converged"
         ),
-
         "convergence": {
             "status": (
                 "converged"
                 if converged
                 else "not_converged"
             ),
-            "criterion": (
-                "minimum_iterations_and_all_rhat_below_threshold"
-            ),
+            "criterion": "all_rhat_below_threshold",
             "threshold": float(
                 args.rhat_threshold
-            ),
-            "minimum_iterations": int(
-                args.min_iter
             ),
             "converged": bool(
                 converged
             ),
             "convergence_iterations_per_chain": (
-                int(
-                    convergence_iteration
-                )
+                int(convergence_iteration)
                 if convergence_iteration is not None
                 else None
             ),
@@ -2150,15 +1848,10 @@ def main():
                 ]
                 if final_rhat is not None
                 else (
-                    convergence_history[-1][
-                        "rhat"
-                    ]
+                    convergence_history[-1]["rhat"]
                     if (
                         convergence_history
-                        and convergence_history[-1][
-                            "rhat"
-                        ]
-                        is not None
+                        and convergence_history[-1]["rhat"] is not None
                     )
                     else None
                 )
@@ -2173,40 +1866,6 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # Explicit constrained-run metadata
-    # ------------------------------------------------------------------
-
-    save_json(
-        output_dir
-        / "parameterization.json",
-        {
-            "sampled_parameter_names": list(
-                SAMPLED_PARAMETER_NAMES
-            ),
-            "canonical_parameter_names": list(
-                CANONICAL_PARAMETER_NAMES
-            ),
-            "fixed_parameters": {
-                "h": fixed["h"],
-            },
-            "constraints": {
-                "b_greater_than_a": True,
-                "parameterization": "b = a + b_fraction * (1000 - a)",
-                "b_upper_bound_m": BMAX,
-            },
-            "fixed_analytical_inputs": {
-                "c": fixed["c"],
-                "nu": fixed["nu"],
-                "E": fixed["E"],
-                "pmax": fixed["pmax"],
-                "tpeak": fixed["tpeak"],
-                "d": fixed["d"],
-                "alpha": fixed["alpha"],
-            },
-        },
-    )
-
-    # ------------------------------------------------------------------
     # Final report
     # ------------------------------------------------------------------
 
@@ -2217,12 +1876,11 @@ def main():
 
     if converged:
         print(
-            "CONSTRAINED BAYESIAN INVERSION CONVERGED"
+            "BAYESIAN INVERSION CONVERGED"
         )
     else:
         print(
-            "CONSTRAINED BAYESIAN SAMPLING COMPLETE - "
-            "NOT CONVERGED"
+            "BAYESIAN SAMPLING COMPLETE - NOT CONVERGED"
         )
 
     print(
@@ -2230,48 +1888,12 @@ def main():
     )
 
     print(
-        "\nGeometry constraints:"
+        f"\nOutput directory:\n"
+        f"    {output_dir}"
     )
 
     print(
-        f"    h = {fixed['h']} m"
-    )
-
-    print(
-        "    b > a"
-    )
-
-    print(
-        "\nPosterior dimensions:"
-    )
-
-    print(
-        f"    sampled dimensions       = "
-        f"{len(SAMPLED_PARAMETER_NAMES)}"
-    )
-
-    print(
-        f"    canonical dimensions    = "
-        f"{len(CANONICAL_PARAMETER_NAMES)}"
-    )
-
-    print(
-        f"    chains                  = "
-        f"{posterior_chains.shape[0]}"
-    )
-
-    print(
-        f"    iterations/chain        = "
-        f"{posterior_chains.shape[1]}"
-    )
-
-    print(
-        f"    total samples           = "
-        f"{flat_samples.shape[0]}"
-    )
-
-    print(
-        "\nConvergence:"
+        "\nConvergence status:"
     )
 
     if converged:
@@ -2279,40 +1901,66 @@ def main():
             "    CONVERGED"
         )
         print(
-            f"    iterations/chain = "
-            f"{convergence_iteration}"
+            f"    iterations/chain = {convergence_iteration}"
         )
     else:
         print(
             "    NOT CONVERGED"
         )
         print(
-            f"    iterations/chain = "
-            f"{args.max_iter}"
+            f"    maximum iterations reached = {total_iterations}"
         )
 
     print(
-        f"    R-hat threshold = "
-        f"{args.rhat_threshold}"
+        f"    R-hat threshold = {args.rhat_threshold}"
     )
 
     if final_rhat is not None:
         print(
             "    final R-hat = "
             + np.array2string(
-                np.asarray(
-                    final_rhat
-                ),
+                np.asarray(final_rhat),
                 precision=4,
                 separator=", ",
             )
         )
+    elif convergence_history:
+        last_rhat = convergence_history[-1].get("rhat")
+        if last_rhat is not None:
+            print(
+                "    final R-hat = "
+                + np.array2string(
+                    np.asarray(last_rhat),
+                    precision=4,
+                    separator=", ",
+                )
+            )
+
+    print(
+        "\nPosterior dimensions:"
+    )
+
+    print(
+        f"    chains             = "
+        f"{posterior_chains.shape[0]}"
+    )
+
+    print(
+        f"    iterations/chain   = "
+        f"{posterior_chains.shape[1]}"
+    )
+
+    print(
+        f"    total samples      = "
+        f"{flat_samples.shape[0]}"
+    )
 
     print(
         "\nMAP:"
     )
 
-    for name in CANONICAL_PARAMETER_NAMES:
+    for name in PARAM_NAMES:
+
         print(
             f"    {name:22s} = "
             f"{map_record[name]:.8g}"
@@ -2323,43 +1971,13 @@ def main():
         f"{map_record['sigma_strain']:.8g} nstrain"
     )
 
-    print(
-        "\nOutput directory:"
-    )
-
-    print(
-        f"    {output_dir}"
-    )
-
-    print(
-        "\nIMPORTANT:"
-    )
-
-    print(
-        "    h was fixed at the configured physical depth."
-    )
-
-    print(
-        "    b > a was enforced by the b_fraction parameterization."
-    )
-
-    print(
-        "    c and nu remain fixed analytical-model inputs."
-    )
-
-    print(
-        "    No arbitrary numerical penalty was added."
-    )
-
-    print(
-        "=" * 78
-    )
-
 
 # ============================================================================
 # Entry point
 # ============================================================================
 
 if __name__ == "__main__":
+
     multiprocessing.freeze_support()
+
     main()
