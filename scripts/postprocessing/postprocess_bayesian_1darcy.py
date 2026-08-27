@@ -178,7 +178,7 @@ PARAM_BAND_LABEL = "95% parameter uncertainty"
 TOTAL_BAND_LABEL = "95% total predictive uncertainty"
 
 DEFAULT_BURN_IN = 0.20
-DEFAULT_N_PREDICTIVE = 500
+DEFAULT_N_PREDICTIVE = 1000
 DEFAULT_SEED = 42
 DEFAULT_MAX_PAIRWISE = 5000
 
@@ -2058,9 +2058,10 @@ def station_plot(
                 :,
                 channel_index,
             ],
-            color=color,
-            alpha=0.10,
-            linewidth=0,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.14,
+            linewidth=0.80,
             zorder=1,
         )
 
@@ -2079,9 +2080,10 @@ def station_plot(
                 :,
                 channel_index,
             ],
-            color=color,
-            alpha=0.28,
-            linewidth=0,
+            facecolor=color,
+            edgecolor=color,
+            alpha=0.36,
+            linewidth=1.00,
             zorder=2,
         )
 
