@@ -1,47 +1,86 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-Preprocess COMSOL strain exports for the Avant multi-station workflow.
+Preprocess COMSOL observation exports for the AVANT multi-station workflow.
 
-This script converts a raw COMSOL text export into two canonical files:
+The script supports:
 
-1. A cleaned strain CSV with columns such as:
-       time_s
-       eXX_S01 ... eXX_S08
-       eYY_S01 ... eYY_S08
-       eZZ_S01 ... eZZ_S08
-       eXY_S01 ... eXY_S08
+1. Strain observations:
+       eXX
+       eYY
+       eZZ
+       eXY
 
-2. A station metadata CSV with:
-       station
-       x
-       y
-       z
+2. Optional pressure-monitor observations:
+       Pressure (Pa), Point: (x, y, z)
+
+Canonical strain output
+-----------------------
+    time_s
+    eXX_S01 ... eXX_S08
+    eYY_S01 ... eYY_S08
+    eZZ_S01 ... eZZ_S08
+    eXY_S01 ... eXY_S08
+
+Canonical strain-station metadata
+---------------------------------
+    station
+    x
+    y
+    z
+
+Canonical pressure output
+-------------------------
+    time_s
+    pressure_P01_Pa
+    pressure_P02_Pa
+    ...
+
+Canonical pressure-monitor metadata
+-----------------------------------
+    monitor
+    x
+    y
+    z
+    units
 
 The raw COMSOL export is never modified.
 
-Station coordinates and strain-component labels are extracted directly
-from the COMSOL column headers. Canonical station labels S01, S02, ...
-are assigned according to the order in which unique station coordinates
-first appear in the COMSOL header.
+Station coordinates, pressure-monitor coordinates, strain-component
+labels, and pressure units are extracted directly from the COMSOL
+header.
 
-Example
--------
+Canonical station labels S01, S02, ... are assigned according to the
+order in which unique strain-station coordinates first appear.
+
+Pressure-monitor labels P01, P02, ... are assigned according to the
+order in which pressure channels appear.
+
+Backward compatibility
+----------------------
+The existing strain-only workflow remains valid:
+
 python scripts/preprocessing/clean_dataset.py ^
     datasets/comsol/1darcy/raw/k1D.txt ^
     --output datasets/comsol/1darcy/processed/strain.csv ^
     --stations datasets/comsol/1darcy/metadata/stations.csv
 
+Transient strain + pressure example
+-----------------------------------
+python scripts/preprocessing/clean_dataset.py ^
+    datasets/comsol/1darcy/raw/avant_transient_k1darcy_strain_pressure.txt ^
+    --output datasets/comsol/1darcy/processed/verification_transient/strain.csv ^
+    --stations datasets/comsol/1darcy/metadata/verification_transient/strain_stations.csv ^
+    --pressure-output datasets/comsol/1darcy/processed/verification_transient/pressure.csv ^
+    --pressure-monitors datasets/comsol/1darcy/metadata/verification_transient/pressure_monitors.csv
+
 Duplicate timestamps
 --------------------
-Duplicate timestamps are preserved by default and reported to the user.
+Duplicate timestamps are preserved by default and reported.
 
 If duplicate timestamps are known to represent duplicate COMSOL output
-records and should be collapsed, use:
-
-python scripts/preprocessing/clean_dataset.py ^
-    datasets/comsol/1darcy/raw/k1D.txt ^
-    --output datasets/comsol/1darcy/processed/strain.csv ^
-    --stations datasets/comsol/1darcy/metadata/stations.csv ^
-    --deduplicate-time
+records and should be collapsed, use --deduplicate-time.
 """
 
 from __future__ import annotations
@@ -54,29 +93,91 @@ import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------
-# COMSOL format definition
-# ---------------------------------------------------------------------
+# ============================================================================
+# COMSOL format definitions
+# ============================================================================
 
-SUPPORTED_COMPONENTS = ("eXX", "eYY", "eZZ", "eXY")
+SUPPORTED_COMPONENTS = (
+    "eXX",
+    "eYY",
+    "eZZ",
+    "eXY",
+)
 
-# Example COMSOL header entry:
+
+# Example:
 #
 # solid2.eXX*1E9 (1), Point: (250, 433, -40)
 #
-# Captures:
-#   1. strain component: eXX
-#   2. coordinate string: 250, 433, -40
-#
-CHANNEL_PATTERN = re.compile(
+STRAIN_CHANNEL_PATTERN = re.compile(
     r"solid2\.(eXX|eYY|eZZ|eXY)\*1E9\s*\([^)]*\),\s*"
     r"Point:\s*\(([^)]+)\)"
 )
 
 
-# ---------------------------------------------------------------------
+# Example:
+#
+# Pressure (Pa), Point: (-185, 25, -3)
+#
+PRESSURE_CHANNEL_PATTERN = re.compile(
+    r"Pressure\s*\(([^)]+)\),\s*"
+    r"Point:\s*\(([^)]+)\)"
+)
+
+
+# ============================================================================
+# Coordinate parsing
+# ============================================================================
+
+def parse_coordinates(
+    coordinate_text: str,
+    observation_type: str,
+) -> tuple[float, float, float]:
+    """
+    Parse a COMSOL coordinate string.
+
+    Parameters
+    ----------
+    coordinate_text
+        Text such as ``250, 433, -40``.
+
+    observation_type
+        Human-readable observation type used in error messages.
+
+    Returns
+    -------
+    tuple
+        (x, y, z)
+    """
+
+    coordinate_tokens = [
+        value.strip()
+        for value in coordinate_text.split(",")
+    ]
+
+    if len(coordinate_tokens) != 3:
+        raise ValueError(
+            f"Could not parse {observation_type} coordinates "
+            f"from COMSOL header: {coordinate_text!r}"
+        )
+
+    try:
+        x, y, z = (
+            float(value)
+            for value in coordinate_tokens
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid {observation_type} coordinates in "
+            f"COMSOL header: {coordinate_text!r}"
+        ) from exc
+
+    return x, y, z
+
+
+# ============================================================================
 # Raw COMSOL reader
-# ---------------------------------------------------------------------
+# ============================================================================
 
 def read_comsol_file(
     path: Path,
@@ -84,13 +185,8 @@ def read_comsol_file(
     """
     Read a raw COMSOL text export.
 
-    COMSOL metadata/header lines begin with '%'. Numeric rows contain
-    time followed by strain values.
-
-    Parameters
-    ----------
-    path
-        Path to the raw COMSOL text export.
+    COMSOL metadata/header lines begin with ``%``. Remaining non-empty
+    lines are expected to contain numeric data.
 
     Returns
     -------
@@ -98,46 +194,56 @@ def read_comsol_file(
         COMSOL metadata/header lines.
 
     numeric_rows
-        Numeric rows containing time and strain values.
+        Numeric rows containing time followed by observation values.
     """
 
     if not path.exists():
-        raise FileNotFoundError(f"COMSOL input file not found: {path}")
+        raise FileNotFoundError(
+            f"COMSOL input file not found: {path}"
+        )
 
     header_lines: list[str] = []
     numeric_rows: list[list[float]] = []
 
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(
+        "r",
+        encoding="utf-8",
+    ) as handle:
 
-        for line_number, raw_line in enumerate(handle, start=1):
+        for line_number, raw_line in enumerate(
+            handle,
+            start=1,
+        ):
 
             line = raw_line.strip()
 
             if not line:
                 continue
 
-            # COMSOL metadata/header
             if line.startswith("%"):
                 header_lines.append(line)
                 continue
 
             tokens = line.split()
 
-            # Every remaining line should be numeric.
             try:
                 float(tokens[0])
             except (IndexError, ValueError) as exc:
                 raise ValueError(
-                    f"Unexpected non-comment line {line_number} in "
-                    f"{path}:\n{raw_line.rstrip()}"
+                    f"Unexpected non-comment line "
+                    f"{line_number} in {path}:\n"
+                    f"{raw_line.rstrip()}"
                 ) from exc
 
             try:
-                row = [float(token) for token in tokens]
+                row = [
+                    float(token)
+                    for token in tokens
+                ]
             except ValueError as exc:
                 raise ValueError(
-                    f"Could not parse numeric data on line "
-                    f"{line_number} in {path}."
+                    f"Could not parse numeric data on "
+                    f"line {line_number} in {path}."
                 ) from exc
 
             numeric_rows.append(row)
@@ -155,73 +261,56 @@ def read_comsol_file(
     return header_lines, numeric_rows
 
 
-# ---------------------------------------------------------------------
-# COMSOL header parser
-# ---------------------------------------------------------------------
+# ============================================================================
+# Header parsing
+# ============================================================================
 
-def parse_channel_header(
+def parse_strain_channels(
     header_lines: list[str],
-) -> list[tuple[str, tuple[float, float, float]]]:
+) -> list[
+    tuple[
+        str,
+        tuple[float, float, float],
+    ]
+]:
     """
-    Extract strain-component and station-coordinate information from
-    the COMSOL header.
+    Extract strain-component and station-coordinate information.
 
-    Returns
-    -------
-    channels
-        Ordered list containing:
-
-            (component, (x, y, z))
-
-        for every strain channel in the COMSOL export.
-
-    Notes
-    -----
-    Channel ordering is preserved exactly as it appears in the raw
-    COMSOL file.
+    Channel ordering is preserved exactly as it appears in the COMSOL
+    header.
     """
 
     channels: list[
-        tuple[str, tuple[float, float, float]]
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
     ] = []
 
     for line in header_lines:
 
-        for match in CHANNEL_PATTERN.finditer(line):
+        for match in STRAIN_CHANNEL_PATTERN.finditer(
+            line
+        ):
 
             component = match.group(1)
-            coordinate_text = match.group(2)
 
-            coordinate_tokens = [
-                value.strip()
-                for value in coordinate_text.split(",")
-            ]
-
-            if len(coordinate_tokens) != 3:
-                raise ValueError(
-                    "Could not parse station coordinates from "
-                    f"COMSOL header: {coordinate_text!r}"
-                )
-
-            try:
-                x, y, z = (
-                    float(value)
-                    for value in coordinate_tokens
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    "Invalid station coordinates in COMSOL "
-                    f"header: {coordinate_text!r}"
-                ) from exc
+            coordinates = parse_coordinates(
+                match.group(2),
+                "strain-station",
+            )
 
             channels.append(
-                (component, (x, y, z))
+                (
+                    component,
+                    coordinates,
+                )
             )
 
     if not channels:
         raise ValueError(
-            "No supported strain channels were found in the "
-            "COMSOL header.\n"
+            "No supported strain channels were found in "
+            "the COMSOL header.\n"
             "Expected entries similar to:\n"
             "'solid2.eXX*1E9 (1), Point: (x, y, z)'"
         )
@@ -229,48 +318,165 @@ def parse_channel_header(
     return channels
 
 
-# ---------------------------------------------------------------------
-# Station metadata
-# ---------------------------------------------------------------------
-
-def build_station_table(
-    channels: list[
-        tuple[str, tuple[float, float, float]]
-    ],
-) -> tuple[
-    pd.DataFrame,
-    dict[tuple[float, float, float], str],
+def parse_pressure_channels(
+    header_lines: list[str],
+) -> list[
+    tuple[
+        str,
+        tuple[float, float, float],
+    ]
 ]:
     """
-    Construct canonical station metadata.
-
-    Station IDs are assigned according to the first appearance of each
-    unique coordinate in the COMSOL header.
-
-    For example:
-
-        station,x,y,z
-        S01,250,433,-40
-        S02,250,-433,-40
-
-    Only coordinates explicitly contained in the COMSOL export are
-    stored. Derived quantities such as radial distance are intentionally
-    not added to the canonical metadata.
+    Extract optional pressure-monitor channels.
 
     Returns
     -------
-    stations
-        DataFrame containing station, x, y, and z.
+    pressure_channels
+        Ordered list containing
 
-    coordinate_to_station
-        Mapping between COMSOL coordinates and canonical station IDs.
+            (units, (x, y, z))
+
+        for each pressure channel.
+
+    Notes
+    -----
+    Pressure is optional. A strain-only COMSOL export therefore
+    returns an empty list.
+    """
+
+    channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ] = []
+
+    for line in header_lines:
+
+        for match in PRESSURE_CHANNEL_PATTERN.finditer(
+            line
+        ):
+
+            units = match.group(1).strip()
+
+            coordinates = parse_coordinates(
+                match.group(2),
+                "pressure-monitor",
+            )
+
+            channels.append(
+                (
+                    units,
+                    coordinates,
+                )
+            )
+
+    return channels
+
+
+# Backward-compatible alias for existing imports/users.
+parse_channel_header = parse_strain_channels
+
+
+# ============================================================================
+# Raw numeric-data validation
+# ============================================================================
+
+def validate_raw_numeric_rows(
+    numeric_rows: list[list[float]],
+    strain_channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+    pressure_channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+) -> None:
+    """
+    Validate raw numeric row lengths against parsed observations.
+    """
+
+    if not numeric_rows:
+        raise ValueError(
+            "No numeric COMSOL rows were supplied."
+        )
+
+    n_data_columns = len(
+        numeric_rows[0]
+    )
+
+    for row_number, row in enumerate(
+        numeric_rows,
+        start=1,
+    ):
+
+        if len(row) != n_data_columns:
+
+            raise ValueError(
+                "Inconsistent number of columns in "
+                "numeric COMSOL data. "
+                f"Row {row_number} has {len(row)} "
+                f"columns; expected {n_data_columns}."
+            )
+
+    expected_columns = (
+        1
+        + len(strain_channels)
+        + len(pressure_channels)
+    )
+
+    if n_data_columns != expected_columns:
+
+        raise ValueError(
+            "Mismatch between COMSOL header and numeric data.\n"
+            f"Header describes "
+            f"{len(strain_channels)} strain channels, "
+            f"{len(pressure_channels)} pressure channels, "
+            f"plus time "
+            f"({expected_columns} total columns), "
+            f"but numeric rows contain "
+            f"{n_data_columns} columns."
+        )
+
+
+# ============================================================================
+# Strain-station metadata
+# ============================================================================
+
+def build_station_table(
+    channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+) -> tuple[
+    pd.DataFrame,
+    dict[
+        tuple[float, float, float],
+        str,
+    ],
+]:
+    """
+    Construct canonical strain-station metadata.
+
+    Station IDs are assigned according to first appearance of each
+    unique coordinate in the COMSOL strain-channel header.
     """
 
     coordinate_to_station: dict[
-        tuple[float, float, float], str
+        tuple[float, float, float],
+        str,
     ] = {}
 
-    records: list[dict[str, float | str]] = []
+    records: list[
+        dict[str, float | str]
+    ] = []
 
     for _, coordinates in channels:
 
@@ -281,7 +487,9 @@ def build_station_table(
             f"S{len(coordinate_to_station) + 1:02d}"
         )
 
-        coordinate_to_station[coordinates] = station_id
+        coordinate_to_station[
+            coordinates
+        ] = station_id
 
         x, y, z = coordinates
 
@@ -296,27 +504,91 @@ def build_station_table(
 
     stations = pd.DataFrame(
         records,
-        columns=["station", "x", "y", "z"],
+        columns=[
+            "station",
+            "x",
+            "y",
+            "z",
+        ],
     )
 
-    return stations, coordinate_to_station
+    return (
+        stations,
+        coordinate_to_station,
+    )
 
 
-# ---------------------------------------------------------------------
+# ============================================================================
+# Pressure-monitor metadata
+# ============================================================================
+
+def build_pressure_monitor_table(
+    pressure_channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+) -> pd.DataFrame:
+    """
+    Construct canonical pressure-monitor metadata.
+    """
+
+    records: list[
+        dict[str, float | str]
+    ] = []
+
+    for index, (
+        units,
+        coordinates,
+    ) in enumerate(
+        pressure_channels,
+        start=1,
+    ):
+
+        x, y, z = coordinates
+
+        records.append(
+            {
+                "monitor": f"P{index:02d}",
+                "x": x,
+                "y": y,
+                "z": z,
+                "units": units,
+            }
+        )
+
+    return pd.DataFrame(
+        records,
+        columns=[
+            "monitor",
+            "x",
+            "y",
+            "z",
+            "units",
+        ],
+    )
+
+
+# ============================================================================
 # Canonical strain dataset
-# ---------------------------------------------------------------------
+# ============================================================================
 
 def build_clean_strain_dataframe(
     numeric_rows: list[list[float]],
     channels: list[
-        tuple[str, tuple[float, float, float]]
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
     ],
     coordinate_to_station: dict[
-        tuple[float, float, float], str
+        tuple[float, float, float],
+        str,
     ],
 ) -> pd.DataFrame:
     """
-    Convert raw COMSOL numeric data into the canonical strain format.
+    Convert raw COMSOL strain observations into canonical format.
 
     Output ordering is component-major, then station-major:
 
@@ -326,44 +598,7 @@ def build_clean_strain_dataframe(
         eYY_S01 ... eYY_S08
         eZZ_S01 ... eZZ_S08
         eXY_S01 ... eXY_S08
-
-    This ordering provides a stable interface between COMSOL data and
-    the analytical forward/inversion workflow.
     """
-
-    # -------------------------------------------------------------
-    # Validate numeric row lengths
-    # -------------------------------------------------------------
-
-    n_data_columns = len(numeric_rows[0])
-
-    for row_number, row in enumerate(
-        numeric_rows,
-        start=1,
-    ):
-
-        if len(row) != n_data_columns:
-
-            raise ValueError(
-                "Inconsistent number of columns in numeric data. "
-                f"Row {row_number} has {len(row)} columns; "
-                f"expected {n_data_columns}."
-            )
-
-    expected_columns = 1 + len(channels)
-
-    if n_data_columns != expected_columns:
-
-        raise ValueError(
-            "Mismatch between COMSOL header and numeric data.\n"
-            f"Header describes {len(channels)} strain channels "
-            f"plus time ({expected_columns} total columns), "
-            f"but numeric rows contain {n_data_columns} columns."
-        )
-
-    # -------------------------------------------------------------
-    # Convert to numeric table
-    # -------------------------------------------------------------
 
     data = np.asarray(
         numeric_rows,
@@ -372,16 +607,16 @@ def build_clean_strain_dataframe(
 
     raw = pd.DataFrame(data)
 
-    time = raw.iloc[:, 0].to_numpy(
+    time = raw.iloc[
+        :,
+        0,
+    ].to_numpy(
         dtype=float
     )
 
-    # -------------------------------------------------------------
-    # Map raw COMSOL columns to component/station pairs
-    # -------------------------------------------------------------
-
     channel_map: dict[
-        tuple[str, str], int
+        tuple[str, str],
+        int,
     ] = {}
 
     station_ids: list[str] = []
@@ -394,32 +629,40 @@ def build_clean_strain_dataframe(
         start=1,
     ):
 
-        station = coordinate_to_station[coordinates]
+        station = (
+            coordinate_to_station[
+                coordinates
+            ]
+        )
 
-        station_ids.append(station)
+        station_ids.append(
+            station
+        )
 
-        key = (component, station)
+        key = (
+            component,
+            station,
+        )
 
         if key in channel_map:
-
             raise ValueError(
-                "Duplicate COMSOL strain channel detected: "
-                f"{component} at {station}."
+                "Duplicate COMSOL strain channel "
+                f"detected: {component} at {station}."
             )
 
-        channel_map[key] = raw_index
+        channel_map[
+            key
+        ] = raw_index
 
-    # Preserve station order determined from the raw header.
     unique_station_ids = list(
-        dict.fromkeys(station_ids)
+        dict.fromkeys(
+            station_ids
+        )
     )
 
-    # -------------------------------------------------------------
-    # Build canonical output
-    # -------------------------------------------------------------
-
     ordered_columns: dict[
-        str, np.ndarray
+        str,
+        np.ndarray,
     ] = {
         "time_s": time
     }
@@ -428,100 +671,189 @@ def build_clean_strain_dataframe(
 
         for station in unique_station_ids:
 
-            key = (component, station)
+            key = (
+                component,
+                station,
+            )
 
             if key not in channel_map:
-
                 raise ValueError(
                     f"Missing {component} channel "
                     f"for station {station}."
                 )
 
-            raw_index = channel_map[key]
+            raw_index = (
+                channel_map[
+                    key
+                ]
+            )
 
             ordered_columns[
                 f"{component}_{station}"
             ] = raw.iloc[
-                :, raw_index
-            ].to_numpy(dtype=float)
+                :,
+                raw_index,
+            ].to_numpy(
+                dtype=float
+            )
 
     return pd.DataFrame(
         ordered_columns
     )
 
 
-# ---------------------------------------------------------------------
-# Dataset validation
-# ---------------------------------------------------------------------
+# ============================================================================
+# Canonical pressure dataset
+# ============================================================================
+
+def sanitize_units(
+    units: str,
+) -> str:
+    """
+    Convert a COMSOL unit string into a safe column-name token.
+    """
+
+    safe_units = re.sub(
+        r"[^A-Za-z0-9]+",
+        "_",
+        units,
+    ).strip("_")
+
+    if not safe_units:
+        return "unknown"
+
+    return safe_units
+
+
+def build_clean_pressure_dataframe(
+    numeric_rows: list[list[float]],
+    strain_channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+    pressure_channels: list[
+        tuple[
+            str,
+            tuple[float, float, float],
+        ]
+    ],
+) -> pd.DataFrame:
+    """
+    Convert optional COMSOL pressure observations to canonical format.
+
+    The current COMSOL export contract places pressure channels after
+    the strain channels. The complete raw column count is validated
+    before this function is called.
+    """
+
+    data = np.asarray(
+        numeric_rows,
+        dtype=float,
+    )
+
+    output: dict[
+        str,
+        np.ndarray,
+    ] = {
+        "time_s": data[:, 0]
+    }
+
+    first_pressure_column = (
+        1
+        + len(strain_channels)
+    )
+
+    for offset, (
+        units,
+        _,
+    ) in enumerate(
+        pressure_channels
+    ):
+
+        monitor = (
+            f"P{offset + 1:02d}"
+        )
+
+        safe_units = sanitize_units(
+            units
+        )
+
+        column_name = (
+            f"pressure_{monitor}_{safe_units}"
+        )
+
+        raw_column = (
+            first_pressure_column
+            + offset
+        )
+
+        output[
+            column_name
+        ] = data[
+            :,
+            raw_column,
+        ]
+
+    return pd.DataFrame(
+        output
+    )
+
+
+# ============================================================================
+# Strain validation
+# ============================================================================
 
 def validate_clean_dataset(
     df: pd.DataFrame,
     stations: pd.DataFrame,
 ) -> None:
     """
-    Validate the processed strain dataset and station metadata.
-
-    Validation includes:
-
-    - presence of time_s
-    - finite time values
-    - finite strain values
-    - expected number of strain channels
-    - unique station IDs
-    - complete x/y/z station coordinates
-    - duplicate timestamp reporting
+    Validate processed strain observations and station metadata.
     """
-
-    # -------------------------------------------------------------
-    # Time
-    # -------------------------------------------------------------
 
     if "time_s" not in df.columns:
         raise ValueError(
-            "Cleaned dataset must contain 'time_s'."
+            "Cleaned strain dataset must "
+            "contain 'time_s'."
         )
 
-    time = df["time_s"].to_numpy(
+    time = df[
+        "time_s"
+    ].to_numpy(
         dtype=float
     )
 
-    if not np.isfinite(time).all():
+    if not np.isfinite(
+        time
+    ).all():
         raise ValueError(
-            "Time column contains NaN or infinite values."
+            "Time column contains NaN "
+            "or infinite values."
         )
 
-    # -------------------------------------------------------------
-    # Duplicate timestamps
-    # -------------------------------------------------------------
-
     duplicate_count = int(
-        df["time_s"].duplicated().sum()
+        df[
+            "time_s"
+        ].duplicated().sum()
     )
 
     if duplicate_count:
 
         print(
-            f"[WARNING] Found {duplicate_count} duplicate "
-            "time rows."
+            f"[WARNING] Found {duplicate_count} "
+            "duplicate time rows."
         )
 
         print(
-            "[WARNING] Duplicate rows are preserved unless "
-            "--deduplicate-time is specified."
+            "[WARNING] Duplicate rows are preserved "
+            "unless --deduplicate-time is specified."
         )
-
-    # -------------------------------------------------------------
-    # Station metadata
-    # -------------------------------------------------------------
 
     if len(stations) == 0:
         raise ValueError(
             "No station metadata were generated."
-        )
-
-    if stations["station"].duplicated().any():
-        raise ValueError(
-            "Station IDs are not unique."
         )
 
     required_station_columns = {
@@ -533,27 +865,37 @@ def validate_clean_dataset(
 
     missing_station_columns = (
         required_station_columns
-        - set(stations.columns)
+        - set(
+            stations.columns
+        )
     )
 
     if missing_station_columns:
-
         raise ValueError(
-            "Station metadata are missing required columns: "
+            "Station metadata are missing "
+            "required columns: "
             f"{sorted(missing_station_columns)}"
         )
 
     if stations[
-        ["x", "y", "z"]
+        "station"
+    ].duplicated().any():
+        raise ValueError(
+            "Station IDs are not unique."
+        )
+
+    if stations[
+        [
+            "x",
+            "y",
+            "z",
+        ]
     ].isna().any().any():
 
         raise ValueError(
-            "Station metadata contain missing coordinates."
+            "Station metadata contain "
+            "missing coordinates."
         )
-
-    # -------------------------------------------------------------
-    # Strain data
-    # -------------------------------------------------------------
 
     strain_columns = [
         column
@@ -568,14 +910,17 @@ def validate_clean_dataset(
 
     strain_values = df[
         strain_columns
-    ].to_numpy(dtype=float)
+    ].to_numpy(
+        dtype=float
+    )
 
     if not np.isfinite(
         strain_values
     ).all():
 
         raise ValueError(
-            "Strain data contain NaN or infinite values."
+            "Strain data contain NaN "
+            "or infinite values."
         )
 
     expected_strain_columns = (
@@ -583,30 +928,131 @@ def validate_clean_dataset(
         * len(stations)
     )
 
-    if len(strain_columns) != expected_strain_columns:
+    if (
+        len(strain_columns)
+        != expected_strain_columns
+    ):
 
         raise ValueError(
-            f"Expected {expected_strain_columns} strain "
-            f"columns "
-            f"({len(SUPPORTED_COMPONENTS)} components x "
+            f"Expected {expected_strain_columns} "
+            f"strain columns "
+            f"({len(SUPPORTED_COMPONENTS)} "
+            f"components x "
             f"{len(stations)} stations), "
             f"found {len(strain_columns)}."
         )
 
 
-# ---------------------------------------------------------------------
+# ============================================================================
+# Pressure validation
+# ============================================================================
+
+def validate_pressure_dataset(
+    pressure: pd.DataFrame,
+    monitors: pd.DataFrame,
+) -> None:
+    """
+    Validate processed pressure observations and monitor metadata.
+    """
+
+    if "time_s" not in pressure.columns:
+        raise ValueError(
+            "Pressure dataset must "
+            "contain 'time_s'."
+        )
+
+    if len(monitors) == 0:
+        raise ValueError(
+            "Pressure data were requested but "
+            "no pressure monitors were parsed."
+        )
+
+    required_monitor_columns = {
+        "monitor",
+        "x",
+        "y",
+        "z",
+        "units",
+    }
+
+    missing_columns = (
+        required_monitor_columns
+        - set(
+            monitors.columns
+        )
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Pressure-monitor metadata are "
+            "missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    if monitors[
+        "monitor"
+    ].duplicated().any():
+
+        raise ValueError(
+            "Pressure-monitor IDs "
+            "are not unique."
+        )
+
+    if monitors[
+        [
+            "x",
+            "y",
+            "z",
+        ]
+    ].isna().any().any():
+
+        raise ValueError(
+            "Pressure-monitor metadata "
+            "contain missing coordinates."
+        )
+
+    pressure_columns = [
+        column
+        for column in pressure.columns
+        if column != "time_s"
+    ]
+
+    if (
+        len(pressure_columns)
+        != len(monitors)
+    ):
+
+        raise ValueError(
+            "Number of pressure-data columns "
+            "does not match number of "
+            "pressure monitors."
+        )
+
+    values = pressure.to_numpy(
+        dtype=float
+    )
+
+    if not np.isfinite(
+        values
+    ).all():
+
+        raise ValueError(
+            "Pressure dataset contains "
+            "NaN or infinite values."
+        )
+
+
+# ============================================================================
 # Duplicate-time handling
-# ---------------------------------------------------------------------
+# ============================================================================
 
 def deduplicate_time_rows(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Collapse duplicate timestamps by averaging strain values.
+    Collapse duplicate timestamps by averaging numeric observations.
 
-    This operation is optional. Duplicate timestamps are preserved by
-    default because preprocessing should not silently discard or alter
-    observations from the raw COMSOL export.
+    Duplicate timestamps are intentionally preserved by default.
     """
 
     if not df[
@@ -627,40 +1073,41 @@ def deduplicate_time_rows(
     )
 
 
-# ---------------------------------------------------------------------
+# ============================================================================
 # Main preprocessing workflow
-# ---------------------------------------------------------------------
+# ============================================================================
 
 def process_comsol_dataset(
     input_file: Path,
     output_file: Path,
     stations_file: Path,
     deduplicate_time: bool = False,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    pressure_output_file: Path | None = None,
+    pressure_monitors_file: Path | None = None,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+]:
     """
-    Process a raw COMSOL strain export.
-
-    Parameters
-    ----------
-    input_file
-        Raw COMSOL text export.
-
-    output_file
-        Destination for the canonical strain CSV.
-
-    stations_file
-        Destination for the station metadata CSV.
-
-    deduplicate_time
-        If True, duplicate timestamps are collapsed by averaging.
+    Process a raw COMSOL observation export.
 
     Returns
     -------
-    cleaned
+    strain
         Canonical strain DataFrame.
 
     stations
-        Station metadata DataFrame.
+        Strain-station metadata.
+
+    pressure
+        Canonical pressure DataFrame if pressure channels are present;
+        otherwise None.
+
+    pressure_monitors
+        Pressure-monitor metadata if pressure channels are present;
+        otherwise None.
     """
 
     print(
@@ -668,97 +1115,232 @@ def process_comsol_dataset(
         f"{input_file}"
     )
 
-    # -------------------------------------------------------------
-    # Read raw data
-    # -------------------------------------------------------------
-
     header_lines, numeric_rows = (
-        read_comsol_file(input_file)
+        read_comsol_file(
+            input_file
+        )
     )
 
     print(
         f"[INFO] Parsed "
-        f"{len(header_lines)} header/comment lines."
+        f"{len(header_lines)} "
+        "header/comment lines."
     )
 
     print(
         f"[INFO] Parsed "
-        f"{len(numeric_rows)} numeric rows."
+        f"{len(numeric_rows)} "
+        "numeric rows."
     )
 
-    # -------------------------------------------------------------
-    # Parse COMSOL channel metadata
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Parse observations
+    # ----------------------------------------------------------------
 
-    channels = parse_channel_header(
-        header_lines
+    strain_channels = (
+        parse_strain_channels(
+            header_lines
+        )
     )
 
-    print(
-        f"[INFO] Identified "
-        f"{len(channels)} strain channels."
-    )
-
-    # -------------------------------------------------------------
-    # Build station metadata
-    # -------------------------------------------------------------
-
-    stations, coordinate_to_station = (
-        build_station_table(channels)
+    pressure_channels = (
+        parse_pressure_channels(
+            header_lines
+        )
     )
 
     print(
         f"[INFO] Identified "
-        f"{len(stations)} unique stations."
+        f"{len(strain_channels)} "
+        "strain channels."
     )
 
-    # -------------------------------------------------------------
-    # Construct canonical dataset
-    # -------------------------------------------------------------
+    print(
+        f"[INFO] Identified "
+        f"{len(pressure_channels)} "
+        "pressure channels."
+    )
 
-    cleaned = build_clean_strain_dataframe(
+    # ----------------------------------------------------------------
+    # Validate raw observation count
+    # ----------------------------------------------------------------
+
+    validate_raw_numeric_rows(
         numeric_rows=numeric_rows,
-        channels=channels,
-        coordinate_to_station=coordinate_to_station,
+        strain_channels=strain_channels,
+        pressure_channels=pressure_channels,
     )
 
-    # -------------------------------------------------------------
-    # Validate before writing
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Build strain metadata
+    # ----------------------------------------------------------------
+
+    (
+        stations,
+        coordinate_to_station,
+    ) = build_station_table(
+        strain_channels
+    )
+
+    print(
+        f"[INFO] Identified "
+        f"{len(stations)} "
+        "unique strain stations."
+    )
+
+    # ----------------------------------------------------------------
+    # Build strain data
+    # ----------------------------------------------------------------
+
+    strain = (
+        build_clean_strain_dataframe(
+            numeric_rows=numeric_rows,
+            channels=strain_channels,
+            coordinate_to_station=(
+                coordinate_to_station
+            ),
+        )
+    )
 
     validate_clean_dataset(
-        cleaned,
+        strain,
         stations,
     )
 
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Optional pressure data
+    # ----------------------------------------------------------------
+
+    pressure: pd.DataFrame | None = None
+
+    pressure_monitors: (
+        pd.DataFrame | None
+    ) = None
+
+    if pressure_channels:
+
+        pressure_monitors = (
+            build_pressure_monitor_table(
+                pressure_channels
+            )
+        )
+
+        pressure = (
+            build_clean_pressure_dataframe(
+                numeric_rows=numeric_rows,
+                strain_channels=(
+                    strain_channels
+                ),
+                pressure_channels=(
+                    pressure_channels
+                ),
+            )
+        )
+
+        validate_pressure_dataset(
+            pressure,
+            pressure_monitors,
+        )
+
+    # ----------------------------------------------------------------
     # Optional duplicate-time processing
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
 
     if deduplicate_time:
 
-        before = len(cleaned)
+        before = len(strain)
 
-        cleaned = deduplicate_time_rows(
-            cleaned
+        strain = (
+            deduplicate_time_rows(
+                strain
+            )
         )
 
-        after = len(cleaned)
+        after = len(strain)
 
         print(
-            f"[INFO] Deduplicated time rows: "
+            f"[INFO] Deduplicated "
+            f"strain time rows: "
             f"{before} -> {after}."
         )
 
-        # Validate the final output again.
         validate_clean_dataset(
-            cleaned,
+            strain,
             stations,
         )
 
-    # -------------------------------------------------------------
+        if pressure is not None:
+
+            pressure_before = (
+                len(pressure)
+            )
+
+            pressure = (
+                deduplicate_time_rows(
+                    pressure
+                )
+            )
+
+            pressure_after = (
+                len(pressure)
+            )
+
+            print(
+                f"[INFO] Deduplicated "
+                f"pressure time rows: "
+                f"{pressure_before} -> "
+                f"{pressure_after}."
+            )
+
+            validate_pressure_dataset(
+                pressure,
+                pressure_monitors,
+            )
+
+    # ----------------------------------------------------------------
+    # Validate pressure-output configuration
+    # ----------------------------------------------------------------
+
+    if (
+        pressure_output_file is None
+    ) != (
+        pressure_monitors_file is None
+    ):
+        raise ValueError(
+            "--pressure-output and "
+            "--pressure-monitors must "
+            "be supplied together."
+        )
+
+    if (
+        pressure_output_file is not None
+        and pressure is None
+    ):
+        raise ValueError(
+            "Pressure output paths were supplied, "
+            "but no pressure channels were found "
+            "in the COMSOL input."
+        )
+
+    if (
+        pressure is not None
+        and pressure_output_file is None
+    ):
+        print(
+            "[WARNING] Pressure observations were "
+            "found but no pressure output paths "
+            "were supplied."
+        )
+
+        print(
+            "[WARNING] Strain outputs will be "
+            "written; pressure observations will "
+            "not be written."
+        )
+
+    # ----------------------------------------------------------------
     # Create output directories
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
 
     output_file.parent.mkdir(
         parents=True,
@@ -770,11 +1352,11 @@ def process_comsol_dataset(
         exist_ok=True,
     )
 
-    # -------------------------------------------------------------
-    # Save canonical outputs
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Save strain outputs
+    # ----------------------------------------------------------------
 
-    cleaned.to_csv(
+    strain.to_csv(
         output_file,
         index=False,
     )
@@ -784,39 +1366,105 @@ def process_comsol_dataset(
         index=False,
     )
 
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Save optional pressure outputs
+    # ----------------------------------------------------------------
+
+    if (
+        pressure is not None
+        and pressure_output_file is not None
+        and pressure_monitors_file is not None
+    ):
+
+        pressure_output_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        pressure_monitors_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        pressure.to_csv(
+            pressure_output_file,
+            index=False,
+        )
+
+        pressure_monitors.to_csv(
+            pressure_monitors_file,
+            index=False,
+        )
+
+    # ----------------------------------------------------------------
     # Summary
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
 
     print()
-    print("[INFO] COMSOL preprocessing complete.")
+    print(
+        "[INFO] COMSOL preprocessing complete."
+    )
+
     print(
         f"[INFO] Clean strain dataset: "
         f"{output_file}"
     )
+
     print(
-        f"[INFO] Station metadata:      "
+        f"[INFO] Strain-station metadata: "
         f"{stations_file}"
     )
+
     print(
-        f"[INFO] Dataset rows:          "
-        f"{len(cleaned)}"
+        f"[INFO] Dataset rows: "
+        f"{len(strain)}"
     )
+
     print(
-        f"[INFO] Strain channels:       "
-        f"{len(cleaned.columns) - 1}"
+        f"[INFO] Strain channels: "
+        f"{len(strain.columns) - 1}"
     )
+
     print(
-        f"[INFO] Number of stations:    "
+        f"[INFO] Number of strain stations: "
         f"{len(stations)}"
     )
 
-    return cleaned, stations
+    if pressure is not None:
+
+        print(
+            f"[INFO] Pressure channels: "
+            f"{len(pressure.columns) - 1}"
+        )
+
+        print(
+            f"[INFO] Number of pressure monitors: "
+            f"{len(pressure_monitors)}"
+        )
+
+        if pressure_output_file is not None:
+
+            print(
+                f"[INFO] Clean pressure dataset: "
+                f"{pressure_output_file}"
+            )
+
+            print(
+                f"[INFO] Pressure-monitor metadata: "
+                f"{pressure_monitors_file}"
+            )
+
+    return (
+        strain,
+        stations,
+        pressure,
+        pressure_monitors,
+    )
 
 
-# ---------------------------------------------------------------------
+# ============================================================================
 # Command-line interface
-# ---------------------------------------------------------------------
+# ============================================================================
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -825,8 +1473,9 @@ def parse_arguments() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Convert a raw COMSOL strain text export into "
-            "a canonical strain CSV and station metadata CSV."
+            "Convert a raw COMSOL observation "
+            "text export into canonical AVANT "
+            "strain data and optional pressure data."
         )
     )
 
@@ -852,7 +1501,28 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         required=True,
         help=(
-            "Path for the station metadata CSV."
+            "Path for the strain-station "
+            "metadata CSV."
+        ),
+    )
+
+    parser.add_argument(
+        "--pressure-output",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path for the cleaned "
+            "pressure CSV."
+        ),
+    )
+
+    parser.add_argument(
+        "--pressure-monitors",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path for pressure-monitor "
+            "metadata CSV."
         ),
     )
 
@@ -861,8 +1531,8 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help=(
             "Average duplicate timestamps. "
-            "By default duplicate rows are preserved "
-            "and only reported."
+            "By default duplicate rows are "
+            "preserved and only reported."
         ),
     )
 
@@ -880,7 +1550,15 @@ def main() -> None:
         input_file=args.input_file,
         output_file=args.output,
         stations_file=args.stations,
-        deduplicate_time=args.deduplicate_time,
+        deduplicate_time=(
+            args.deduplicate_time
+        ),
+        pressure_output_file=(
+            args.pressure_output
+        ),
+        pressure_monitors_file=(
+            args.pressure_monitors
+        ),
     )
 
 
