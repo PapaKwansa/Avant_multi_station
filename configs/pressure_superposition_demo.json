@@ -1,0 +1,36 @@
+{
+  "description": "Illustrative synthetic test only. Geometry follows a plausible constrained baseline; stations and pressures are invented for verification, not AVANT field measurements.",
+  "geometry": {
+    "a": 190.0,
+    "b": 325.0,
+    "c": 3.125,
+    "h": 520.0,
+    "x0_prime": 45.0,
+    "y0_prime": 170.0,
+    "theta_deg": 15.0
+  },
+  "elastic": {"E": 8000000000.0, "nu": 0.35, "alpha": 0.8},
+  "stations": [
+    {"station": "DEMO01", "x": -420.3, "y": -380.7, "z": 20.0},
+    {"station": "DEMO02", "x": -250.7, "y": 210.2, "z": 25.0},
+    {"station": "DEMO03", "x": 50.3, "y": -520.1, "z": 0.0},
+    {"station": "DEMO04", "x": 450.4, "y": -120.8, "z": 18.0},
+    {"station": "DEMO05", "x": 560.2, "y": 360.6, "z": 0.0},
+    {"station": "DEMO06", "x": 180.7, "y": 620.3, "z": 12.0},
+    {"station": "DEMO07", "x": -520.4, "y": 530.9, "z": 15.0},
+    {"station": "DEMO08", "x": -680.6, "y": -80.2, "z": 22.0}
+  ],
+  "components": ["eXX", "eYY", "eXY", "eZZ"],
+  "fine_splits": [4, 4, 1],
+  "coarse_splits": [2, 2, 1],
+  "verification_splits": [[1, 1, 1], [2, 2, 1], [2, 2, 2], [4, 4, 1]],
+  "verification_pressure_pa": 1000000.0,
+  "verification_rtol": 1e-7,
+  "verification_atol_ns": 1e-7,
+  "true_coefficients_pa": [800000.0, 550000.0, 300000.0, 950000.0],
+  "prior_mean_pa": 500000.0,
+  "prior_sd_pa": 500000.0,
+  "noise_std_ns": 2.0,
+  "holdout_stations": ["DEMO07", "DEMO08"],
+  "seed": 42
+}
