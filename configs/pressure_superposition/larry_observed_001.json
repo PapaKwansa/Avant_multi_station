@@ -1,0 +1,17 @@
+{
+  "description": "Exploratory inversion of COMSOL strain changes relative to the first observation, NOT permeability or field pressure validation.",
+  "benchmark_config": "configs/pressure_superposition/larry_network_001/configuration.json",
+  "strain_file": "datasets/comsol/1darcy/processed/verification_transient/strain_unique_time.csv",
+  "fine_splits": [4, 4, 1],
+  "pressure_models": {
+    "uniform": [1, 1, 1],
+    "four_zone": [2, 2, 1]
+  },
+  "holdout_stations": ["S07", "S08"],
+  "reference_mode": "first_sample",
+  "all_times": false,
+  "time_indices": [10, 35, 70, 100],
+  "prior_mean_pa": 0.0,
+  "prior_sd_pa": 1000000.0,
+  "assumed_error_std_ns": 2.0
+}
