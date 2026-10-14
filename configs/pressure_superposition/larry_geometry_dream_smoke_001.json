@@ -1,0 +1,15 @@
+{
+  "benchmark_config": "configs/pressure_superposition/larry_network_001/configuration.json",
+  "holdout_stations": ["S07", "S08"],
+  "fine_splits": [2, 2, 1],
+  "pressure_splits": [2, 2, 1],
+  "truth_vector": [215.0, 185.0, 15.0, 53.0, 141.0, 0.3010299956639812],
+  "bounds": [[180.0, 250.0], [120.0, 250.0], [0.0, 30.0], [0.0, 100.0], [80.0, 200.0], [0.0, 0.8]],
+  "synthetic_pressure_pa": [800000.0, 550000.0, 300000.0, 950000.0],
+  "synthetic_noise_std_ns": 2.0,
+  "prior_mean_pa": 500000.0,
+  "prior_std_pa": 500000.0,
+  "seed": 42,
+  "niterations": 20,
+  "nchains": 6
+}
