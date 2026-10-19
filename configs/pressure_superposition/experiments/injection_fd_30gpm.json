@@ -1,0 +1,17 @@
+{
+  "description": "Illustrative 30 US gpm, 19-hour injection and 77-hour shut-in, 2-D confined benchmark",
+  "length_x_m": 430.0,
+  "length_y_m": 800.0,
+  "thickness_m": 5.0,
+  "nx": 81,
+  "ny": 81,
+  "K_m_s": 0.001,
+  "Ss_per_m": 0.00001,
+  "rho_kg_m3": 1000.0,
+  "gravity_m_s2": 9.81,
+  "injection_rate_gpm": 30.0,
+  "injection_hours": 19.0,
+  "total_hours": 96.0,
+  "dt_hours": 0.5,
+  "snapshot_hours": [0, 5, 19, 24, 48, 96]
+}

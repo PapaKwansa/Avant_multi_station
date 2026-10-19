@@ -11,9 +11,7 @@ production inversion in run_inversion_multi_station.py.
 
 For the current AVANT production analysis, use:
     scripts/inversion/run_inversion_multi_station.py
-"""
 
-"""
 Production PyDREAM runner for the AVANT 1-Darcy transient analytical
 Bayesian inversion.
 
