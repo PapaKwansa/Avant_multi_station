@@ -1,0 +1,96 @@
+{
+  "description": "Controlled synthetic pressure recovery: single_cuboid. Fixed Larry benchmark geometry and elastic properties.",
+  "geometry": {
+    "a": 215.0,
+    "b": 400.0,
+    "c": 2.5,
+    "h": 522.5,
+    "x0_prime": 53.0,
+    "y0_prime": 141.0,
+    "theta_deg": 15.0
+  },
+  "elastic": {
+    "E": 8000000000.0,
+    "nu": 0.25,
+    "alpha": 0.7
+  },
+  "components": [
+    "eXX",
+    "eYY",
+    "eXY",
+    "eZZ"
+  ],
+  "fine_splits": [
+    1,
+    1,
+    1
+  ],
+  "coarse_splits": [
+    1,
+    1,
+    1
+  ],
+  "verification_splits": [
+    [
+      1,
+      1,
+      1
+    ],
+    [
+      2,
+      2,
+      1
+    ],
+    [
+      2,
+      2,
+      2
+    ],
+    [
+      4,
+      4,
+      1
+    ]
+  ],
+  "verification_pressure_pa": 1000000.0,
+  "verification_rtol": 1e-07,
+  "verification_atol_ns": 1e-07,
+  "true_coefficients_pa": [
+    1000000.0
+  ],
+  "prior_mean_pa": 500000.0,
+  "prior_sd_pa": 500000.0,
+  "noise_std_ns": 2.0,
+  "synthetic_noise_std_ns": 2.0,
+  "assumed_error_std_ns": 2.0,
+  "holdout_stations": [
+    "S07",
+    "S08"
+  ],
+  "seed": 42,
+  "station_file": "configs/pressure_superposition/larry_network_001/stations_analytical_depth.csv",
+  "preparation_provenance": {
+    "inputs": {
+      "validation_script": {
+        "path": "scripts/validation/validate_comsol_transient.py",
+        "sha256": "7aafc88339fbafd2801cb25f88f139465ea887eaa998edfba6af7cf868fd55cd"
+      },
+      "template": {
+        "path": "configs/pressure_superposition_demo.json",
+        "sha256": "0d67db2b2db3444d2e96d6e30f9ec32d42c47b6f67ff330a8f8c92c34980e1b4"
+      },
+      "raw_station_metadata": {
+        "path": "datasets/comsol/1darcy/metadata/verification_transient/strain_stations.csv",
+        "sha256": "3f5af270ba02f3ea0bc47dc463f0f5fb3d9c5f737fb65b4a7ec74982f4c6b9b6"
+      },
+      "strain_file_for_metadata_only": {
+        "path": "datasets/comsol/1darcy/processed/verification_transient/strain_unique_time.csv",
+        "sha256": "5727d4d5d44c5275e32e6eeda50705603fd184e87be125d568392ed1cf054e33"
+      }
+    },
+    "station_z_in_this_configuration": "positive-downward depth, already converted; do not convert again",
+    "comsol_surface_z_m": 520.0,
+    "mapping_function": "validate_comsol_transient.validate_vertical_mapping",
+    "synthetic_truth_prior_noise_seed": "Inherited unchanged from the starter template"
+  }
+}

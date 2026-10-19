@@ -3,6 +3,9 @@
 
 Run from the repository root. No field observations are inverted by this script.
 No import of multi_stations_input: geometry is always explicit in the JSON.
+
+Synthetic data noise and assumed likelihood error are independently configurable.
+The original noise_std_ns remains a backward-compatible default for both.
 """
 from __future__ import annotations
 import argparse
@@ -126,12 +129,19 @@ def synthetic(cfg, parent, elastic, stations, out, plots):
     prior_sd = np.broadcast_to(np.asarray(cfg["prior_sd_pa"], dtype=float), (nc,)).copy()
     if not np.isfinite(prior_sd).all() or np.any(prior_sd <= 0):
         raise ValueError("prior_sd_pa must be positive and finite.")
-    noise = float(cfg["noise_std_ns"])
-    if not np.isfinite(noise) or noise <= 0:
-        raise ValueError("noise_std_ns must be positive and finite.")
+    # Separate noise added to observations from error assumed in the likelihood.
+    # Legacy configs with only noise_std_ns retain their original behavior.
+    legacy_noise = cfg.get("noise_std_ns")
+    synthetic_noise = float(cfg.get("synthetic_noise_std_ns", legacy_noise))
+    assumed_error = float(cfg.get("assumed_error_std_ns", legacy_noise))
+    if not np.isfinite(synthetic_noise) or synthetic_noise < 0:
+        raise ValueError("synthetic_noise_std_ns must be finite and nonnegative.")
+    if not np.isfinite(assumed_error) or assumed_error <= 0:
+        raise ValueError("assumed_error_std_ns must be finite and strictly positive.")
     rng = np.random.default_rng(cfg["seed"])
     clean = H @ truth
-    observed = clean + rng.normal(0.0, noise, clean.size)
+    observed = (clean.copy() if synthetic_noise == 0.0 else
+                clean + rng.normal(0.0, synthetic_noise, clean.size))
     holdout = set(cfg.get("holdout_stations", []))
     if not holdout <= set(kernel.station_names):
         raise ValueError("Unknown holdout station(s).")
@@ -141,11 +151,11 @@ def synthetic(cfg, parent, elastic, stations, out, plots):
         raise ValueError("At least one training station is required.")
     posterior = linear_gaussian_posterior(
         H[training], observed[training], prior_mean_pa=prior_mean,
-        prior_covariance_pa2=np.diag(prior_sd ** 2), noise_std_ns=noise)
+        prior_covariance_pa2=np.diag(prior_sd ** 2), noise_std_ns=assumed_error)
     predicted = H @ posterior.mean_pa
     signal_var = np.einsum("ij,jk,ik->i", H, posterior.covariance_pa2, H)
     signal_sd = np.sqrt(np.maximum(signal_var, 0))
-    total_sd = np.sqrt(signal_var + noise ** 2)
+    total_sd = np.sqrt(signal_var + assumed_error ** 2)
     interval_multiplier = 1.959963984540054
     summary_table = pd.DataFrame({
         "coefficient": np.arange(nc), "true_pa": truth,
@@ -176,7 +186,7 @@ def synthetic(cfg, parent, elastic, stations, out, plots):
                         training_channel_mask=training)
     checks = ((truth >= summary_table.lower95_pa) & (truth <= summary_table.upper95_pa))
     metrics = {
-        "scope": "Same-model synthetic test, fixed geometry/mechanics, Gaussian prior and known IID noise; not real-field or permeability inference",
+        "scope": "Same-model synthetic test, fixed geometry/mechanics, Gaussian prior and specified data/likelihood noise; not real-field or permeability inference",
         "n_stations": len(kernel.station_names), "n_channels": len(kernel.channels),
         "n_training_channels": int(training.sum()), "n_holdout_channels": int((~training).sum()),
         "fine_splits": list(cfg["fine_splits"]), "n_mechanical_tiles": len(kernel.tiles),
@@ -190,7 +200,9 @@ def synthetic(cfg, parent, elastic, stations, out, plots):
         "training_rmse_ns": float(np.sqrt(np.mean((observed[training] - predicted[training]) ** 2))),
         "holdout_rmse_ns": (float(np.sqrt(np.mean((observed[~training] - predicted[~training]) ** 2)))
                             if (~training).any() else None),
-        "training_noise_std_ns": noise,
+        "training_noise_std_ns": assumed_error,
+        "synthetic_noise_std_ns": synthetic_noise,
+        "assumed_error_std_ns": assumed_error,
         "posterior_std_pa": posterior.std_pa.tolist(),
         "prior_and_noise_are_illustrative": True
     }
