@@ -1,0 +1,4 @@
+gauge,x_local_m,y_local_m,role
+P01,25.0,0.0,train
+P02,-60.0,80.0,train
+P03,120.0,-150.0,holdout
