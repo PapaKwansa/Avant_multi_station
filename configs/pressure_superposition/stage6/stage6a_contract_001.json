@@ -1,0 +1,51 @@
+{
+  "schema_version": "stage6a-1",
+  "description": "Stage 6A DESIGN CONTRACT, not an executable generalized inversion and not field-calibrated priors.",
+  "hydraulic_storage_mode": "effective_one_way",
+  "geometry_semantics": "finite_pressurized_mechanical_support",
+  "global_hydraulic_domain": {
+    "xmin_prime_m": -1200.0,
+    "xmax_prime_m": 1200.0,
+    "ymin_prime_m": -1600.0,
+    "ymax_prime_m": 1600.0,
+    "well_x_prime_m": 53.0,
+    "well_y_prime_m": 141.0,
+    "source_margin_m": 50.0,
+    "require_well_in_source": true
+  },
+  "reference_mechanics": {
+    "E_ref_Pa": 8000000000.0,
+    "alpha_ref": 0.7,
+    "nu_ref": 0.25,
+    "source_c_m": 2.5,
+    "source_h_m": 522.5
+  },
+  "parameters": {
+    "free": [
+      "log10_K_m_s", "log10_Ss_per_m", "log10_gamma_rel",
+      "a_m", "b_m", "theta_deg", "x0_prime_m", "y0_prime_m"
+    ],
+    "fixed": {"nu": 0.25},
+    "bounds": {
+      "log10_K_m_s": [-7.0, -4.0],
+      "log10_Ss_per_m": [-7.0, -4.0],
+      "log10_gamma_rel": [-0.5, 0.5],
+      "a_m": [150.0, 275.0],
+      "b_m": [300.0, 500.0],
+      "theta_deg": [0.0, 179.999],
+      "x0_prime_m": [-100.0, 200.0],
+      "y0_prime_m": [-50.0, 250.0]
+    },
+    "reference_state": {
+      "log10_K_m_s": -6.0,
+      "log10_Ss_per_m": -6.0,
+      "log10_gamma_rel": 0.0,
+      "a_m": 215.0,
+      "b_m": 400.0,
+      "theta_deg": 15.0,
+      "x0_prime_m": 53.0,
+      "y0_prime_m": 141.0,
+      "nu": 0.25
+    }
+  }
+}
