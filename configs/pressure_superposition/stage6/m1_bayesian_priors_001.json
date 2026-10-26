@@ -1,0 +1,17 @@
+{
+  "schema_version": "m1-bayes-priors-1",
+  "title": "M1 demonstration priors: full nine-parameter synthetic posterior",
+  "prior_provenance": "illustrative_not_field_measured",
+  "warning": "These are illustrative geological prior assumptions, not independent site measurements. Normal-prior centers intentionally differ from the synthetic generating values. Do not interpret this configuration as verified field geology.",
+  "parameters": {
+    "log10_K_inside": {"distribution": "uniform", "bounds": [-6.18, -5.78]},
+    "log10_K_outside": {"distribution": "truncated_normal", "bounds": [-6.93, -6.30], "mean": -6.61, "sd": 0.18},
+    "log10_Ss": {"distribution": "uniform", "bounds": [-6.35, -5.65]},
+    "log10_gamma_rel": {"distribution": "truncated_normal", "bounds": [-0.24, 0.24], "mean": -0.025, "sd": 0.14},
+    "a_m": {"distribution": "uniform", "bounds": [180.0, 255.0]},
+    "b_m": {"distribution": "truncated_normal", "bounds": [325.0, 485.0], "mean": 415.0, "sd": 49.0},
+    "theta_deg": {"distribution": "uniform", "bounds": [0.0, 38.0]},
+    "x0_prime_m": {"distribution": "uniform", "bounds": [-20.0, 130.0]},
+    "y0_prime_m": {"distribution": "truncated_normal", "bounds": [60.0, 220.0], "mean": 120.0, "sd": 51.0}
+  }
+}
