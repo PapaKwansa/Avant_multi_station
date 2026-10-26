@@ -1,0 +1,15 @@
+{
+  "description": "M1 bounded pilot: zone is a hydraulic K contrast; independent fixed mechanical loading support. Synthetic ONLY.",
+  "stage6a_contract": "configs/pressure_superposition/stage6/stage6a_contract_001.json",
+  "hydraulic_config": "configs/pressure_superposition/experiments/injection_fd_30gpm.json",
+  "stations_csv": "configs/pressure_superposition/larry_network_001/stations_analytical_depth.csv",
+  "mechanical_support": {"a_m": 900.0, "b_m": 1250.0, "theta_deg": 0.0, "x0_prime_m": 0.0, "y0_prime_m": 0.0},
+  "mechanical_tile_splits": [6, 8],
+  "quadrature_order": 4,
+  "output_times_h": [0.0, 9.5, 19.0, 24.0, 96.0],
+  "K_inside_m_s": 1e-6,
+  "K_outside_m_s": 3e-7,
+  "Ss_per_m": 1e-6,
+  "gamma_rel": 1.0,
+  "gauges_global_prime_m": [[53.0,141.0],[-185.0,25.0],[300.0,150.0]]
+}
