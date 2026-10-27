@@ -1,0 +1,32 @@
+{
+  "schema_version": "avant-m1-oed-1",
+  "description": "M1 nine-parameter LOCAL pressure/strain OED, entirely hypothetical network. Design comparison only, NOT COMSOL/field validation.",
+  "strain_sigma_ns": 2.0,
+  "pressure_sigma_pa": 20000.0,
+  "parameter_scales": [0.5, 0.5, 0.5, 0.4, 60.0, 100.0, 12.0, 75.0, 75.0],
+  "fd_steps": [0.006, 0.006, 0.006, 0.006, 2.0, 2.0, 0.5, 2.0, 2.0],
+  "rank_rtol": 0.001,
+  "prior_precision": 1.0,
+  "extra_strain_stations": [
+    {"station": "S09", "x": -300.0, "y": 500.0, "z": 30.0}
+  ],
+  "extra_pressure_gauges": [
+    {"gauge": "P04", "x": -450.0, "y": -300.0},
+    {"gauge": "P05", "x": 550.0, "y": 350.0}
+  ],
+  "designs": [
+    {"name": "strain_only_existing", "stations": ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08"], "components": "all", "gauges": [], "time_indices": "all"},
+    {"name": "pressure_only_existing", "stations": [], "components": [], "gauges": ["P01", "P02", "P03"], "time_indices": "all"},
+    {"name": "joint_existing", "stations": ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08"], "components": "all", "gauges": ["P01", "P02", "P03"], "time_indices": "all"},
+    {"name": "joint_training_network", "stations": ["S01", "S02", "S03", "S04", "S05", "S06"], "components": "all", "gauges": ["P01", "P02"], "time_indices": "all"},
+    {"name": "joint_selected_times", "stations": ["S01", "S02", "S03", "S04", "S05", "S06"], "components": "all", "gauges": ["P01", "P02"], "time_indices": [0, 3, 7, 9, 12, 16]},
+    {"name": "joint_augmented_candidates", "stations": "all", "components": "all", "gauges": "all", "time_indices": "all"}
+  ],
+  "greedy": {
+    "base_design": {"name": "baseline_training", "stations": ["S01", "S02", "S03", "S04", "S05", "S06"], "components": "all", "gauges": ["P01", "P02"], "time_indices": "all"},
+    "candidate_stations": ["S07", "S08", "S09"],
+    "candidate_gauges": ["P03", "P04", "P05"],
+    "max_additions": 3
+  },
+  "scenario_parameters": []
+}
